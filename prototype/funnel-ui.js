@@ -208,7 +208,7 @@ function showFunnel() {
     ${!unavailable && funnelView.stage !== "order" ? measuredDetails(r) : ""}
     <section class="panel radar-coverage"><div><h2>Покрытие магазина</h2>
       <p>Индексы заказов только у Kaspersky и Astra. В других ветках есть материалы по товарам.</p></div>
-      <div class="row">${button("Каталог", "page", "catalog")}${button("Возможности роста", "page", "growth")}</div>
+      <div class="row">${button("Поиск продукта", "page", "catalog")}${button("Возможности роста", "page", "growth")}</div>
     </section>`;
 }
 

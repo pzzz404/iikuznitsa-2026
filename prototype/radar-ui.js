@@ -1,9 +1,9 @@
 "use strict";
 
 const radarView = {runs: [], details: null, detailKey: null, pending: null, polling: false};
-const radarPages = ["deviation", "research", "activity", "astra", "growth", "catalog"];
+const radarPages = ["deviation", "research", "activity", "work", "astra", "growth", "catalog"];
 const radarStates = {queued:"В очереди",running:"Выполняется",done:"Завершено",failed:"Ошибка"};
-const decisionNames = {link:"Связать проверку с задачей",new:"Утвердить новую задачу",defer:"Отложить"};
+const decisionNames = {link:"Связать проверку с задачей",new:"Утвердить проверку",segment:"Уточнить сегмент",defer:"Отложить"};
 const modelActions = {event:"Сверить действие и событие",reproduce:"Воспроизвести шаг",
   join:"Проверить общий идентификатор",pilot:"Сравнить способы повторной закупки"};
 const nextReleaseCheck = "После исправления сверить совпадение действия и события. Затем сравнить полные недели с сопоставимым входом.";
@@ -22,6 +22,8 @@ function radarDetailPath(page, ref) {
   if (page === "deviation") return "radar/deviation?" + new URLSearchParams(deviationArgs(ref));
   if (page === "research") return "radar/run?" + new URLSearchParams({id:ref});
   if (page === "astra") return "funnel?family=astra&before=oct12&after=oct19";
+  if (page === "growth" && ref?.split("~")[0] === state.data.growth.key)
+    return "radar/finding?" + new URLSearchParams({id:ref.split("~")[1] || ""});
   return null;
 }
 
@@ -106,13 +108,15 @@ function radarLoading() {
 
 function runTitle(run) {
   return run.mode === "release" ? "Связь заказов Kaspersky с релизом подбора" :
-    run.mode === "growth" ? "Повторная закупка из письма" : run.scope["семейство"] + " · " + run.scope["этап"];
+    run.mode === "growth" ? state.data.growth.title : run.scope["семейство"] + " · " + run.scope["этап"];
 }
 
 function runRow(run) {
+  const label = run.status === "done" ? runTitle(run) + " · результат" : runTitle(run) + " · " + radarStates[run.status];
   return `<div class="radar-run-row"><div><strong>${esc(runTitle(run))}</strong>
     <span class="by">${esc(hDate.format(new Date(run.created)))} · ${esc(radarStates[run.status])}</span></div>
-    ${button(run.status === "done" ? "Посмотреть результат" : "Открыть исследование", "run", run.id, "link")}</div>`;
+    <button type="button" class="link" data-run="${esc(run.id)}" aria-label="${esc(label)}">
+      ${run.finding ? "Открыть находку" : run.status === "done" ? "Посмотреть результат" : "Открыть исследование"}</button></div>`;
 }
 
 function activityPage() {
@@ -121,9 +125,28 @@ function activityPage() {
   </section></div>`;
 }
 
+function workPage() {
+  const runs = radarView.runs;
+  const failed = runs.filter(r => r.status === "failed");
+  const row = (title, rows, empty) => `<section class="panel"><h2>${title}</h2>${rows || `<p class="muted">${empty}</p>`}</section>`;
+  return `<div class="wide"><h1>Моя работа</h1>
+    ${row("Нужно решение", runs.filter(r => r.status === "done" && !r.resolution).map(runRow).join(""), "Готовых исследований без решения пока нет.")}
+    ${row("Агент работает", runs.filter(r => ["queued","running"].includes(r.status)).map(runRow).join(""), "Нет активных исследований.")}
+    ${row("Пора проверить эффект", state.data.tasks.map(t => `<div class="radar-run-row">
+      <div><strong>${esc(t.title)}</strong><span class="by">${taskLabel(t.id)} · ${t.result ? esc(t.result.outcome) : "Ожидаем данные"}</span></div>
+      ${button("Открыть проверку", "check", t.id, "link")}</div>`).join(""), "Сохраните проверку из готового исследования.")}
+    ${row("Принятые решения", runs.filter(r => r.resolution).map(r =>
+      `<div class="radar-run-row"><div><strong>${esc(runTitle(r))}</strong><span class="by">${esc(decisionNames[r.resolution.kind])}</span></div>
+      ${button(r.finding ? "Открыть находку" : "Открыть решение", "run", r.id, "link")}
+      ${r.resolution.task ? button(taskLabel(r.resolution.task), "task", r.resolution.task, "link") : ""}</div>`).join(""), "Сохранённых решений пока нет.")}
+    ${failed.length ? row("Остановившиеся исследования", failed.map(runRow).join("")) : ""}
+    <div class="row">${button("Бэклог", "page", "backlog", "link")} ${button("Журнал модели", "page", "usage", "link")}</div>
+  </div>`;
+}
+
 function resolutionView(result) {
   if (!result) return "";
-  return `<section class="panel radar-resolution"><h2>Решение PM</h2>
+  return `<section class="panel radar-resolution" id="finding-decision" tabindex="-1"><h2>Решение PM</h2>
     <p><strong>${esc(decisionNames[result.kind])}${result.linked ? " · " + esc(result.linked) : ""}</strong></p>
     ${result.note ? `<p>${esc(result.note)}</p>` : ""}
     ${result.followup ? `<p class="by">Условие последующей проверки · ${esc(result.followup)}</p>` : ""}
@@ -134,12 +157,15 @@ function resolutionView(result) {
 function researchPage() {
   const run = detailForRoute();
   if (!run) return `<h1>Исследование</h1>${radarLoading()}`;
+  if (run.finding) return `<div class="wide"><h1>${esc(runTitle(run))}</h1>${findingButton(run.id)}</div>`;
   const back = run.mode === "release" ? button("← Отклонение", "deviation", deviationRef(run.filter), "link") :
+    run.mode === "growth" ? button("← Находка", "finding", state.data.growth.key, "link") :
     button("← Исследования", "page", "activity", "link");
   const status = radarStates[run.status];
   const scope = Object.values(run.scope).flat().join(" · ");
   const head = `<div class="wide radar-page">${back}<p class="eyebrow">Исследование ${esc(run.id.slice(0,8))} · ${esc(status)}</p>
-    <h1>${esc(runTitle(run))}</h1><p class="lede">${esc(scope)}</p>`;
+    <h1>${esc(runTitle(run))}</h1><p class="lede">${esc(scope)}</p>
+    ${run.mode === "growth" ? '<p class="by">Исторический запуск. Модель выбирала из подготовленных вариантов.</p>' : ""}`;
   if (run.status !== "done") return `${head}<section class="panel"><h2>${esc(status)}</h2>
     <p>${esc(run.error || "Можно перейти в другой раздел. Уведомление появится после готового результата.")}</p>
     ${run.status === "failed" ? button("Повторить исследование", "radar-retry", run.id, "primary") : ""}${messages()}
@@ -176,15 +202,124 @@ function researchPage() {
     ${messages()}${resolved}</div>`;
 }
 
-function growthPage() {
-  return `<div class="wide">${button("← Воронка", "page", "funnel", "link")}
-    <p class="eyebrow">Возможности роста · весь магазин</p><h1>Повторная закупка из письма</h1>
-    <p class="lede">Гипотеза для продлеваемых лицензий. Размер аудитории и эффект на оплаты неизвестны.</p>
-    <section class="panel"><h2>Основания</h2><div class="grid">${state.data.growth.map(sourceCard).join("")}</div></section>
-    <details class="panel"><summary>Открыть черновик проверки</summary>
-      <p>Сравнить путь из письма и из истории у покупателей с продлеваемыми лицензиями. Измерить завершение повтора и ошибки выбора.</p>
-      <form id="radar-growth-form" class="row actions"><button class="primary">Исследовать гипотезу</button></form>
-    </details>${messages()}</div>`;
+function findingRef(id) { return state.data.growth.key + (id ? "~" + id : ""); }
+
+function findingButton(id, label="Открыть исходную находку") {
+  return button(label, "finding", findingRef(id), "link");
+}
+
+function researchClaim(claim, run) {
+  const citations = claim.sources.map(id => {
+    const fact = run.result.evidence.find(row => row.id === id);
+    return button(fact.type + " · " + (fact.cohort || fact.sheet) + " · " + fact.record, "fact", id, "link");
+  });
+  return `<p>${esc(claim.text)}</p><div class="row finding-citations">${citations.join("")}</div>`;
+}
+
+function growthDecision(run) {
+  if (run.resolution) return resolutionView(run.resolution);
+  const result = run.result.research;
+  return `<section class="panel" id="finding-decision" tabindex="-1"><h2>Решение PM</h2>
+    <div class="finding-decisions">
+      <details ${result.recommendation === "проверить решение" ? "open" : ""}><summary>Утвердить проверку</summary>
+        <form id="radar-decision" data-run-id="${esc(run.id)}" class="fields">
+          ${field("Название проверки", "title", result.action, 'required maxlength="180"')}
+          ${area("Критерий результата", "criterion", result.criterion, 1200, "required")}
+          ${area("Условие последующей проверки", "followup", result.followup, 700, "required")}
+          <div class="row"><button class="primary" data-decision="new">Сохранить в бэклог</button>${chip(state.data.tag)}</div>
+        </form>
+      </details>
+      ${[["segment","Уточнить сегмент","Какой сегмент и что нужно выяснить"], ["defer","Отложить","Причина или условие возвращения"]].map(([key,name,label]) =>
+        `<details><summary>${name}</summary><form id="radar-${key}" data-run-id="${esc(run.id)}" class="fields">
+          ${area(label,"note","",700,"required")}<div><button class="secondary">Сохранить решение</button></div></form></details>`).join("")}
+    </div>
+  </section>`;
+}
+
+function growthCost(run) {
+  if (!run.calls.length) return "";
+  const first = run.calls[0];
+  return `<details class="panel"><summary>Расход исследования · ${number(run.usage.prompt + run.usage.completion)} токенов</summary>
+    <p><strong>${esc(first.model)}</strong> · ${esc(first.platform)} · ID ${esc(run.id)}</p>
+    ${usageSummary(run.usage)}
+    <p class="by">Локальная плата за API · 0 RUB. Электричество и амортизация сервера отдельно, замера нет.
+      OpenRouter qwen/qwen3-32b · замер не выполнен. Токены Codex относятся к разработке.</p>
+    <div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Вход</th><th>Выход</th><th>Время</th><th>Статус</th></tr></thead>
+    <tbody>${run.calls.map(c => `<tr><td>#${c.id} · ${esc(c.scenario.split(" · ").at(-1))}</td>
+      <td>${c.prompt_tokens ?? "—"}</td><td>${c.completion_tokens ?? "—"}</td>
+      <td>${c.elapsed_ms === null ? "—" : seconds(c.elapsed_ms)}</td><td>${esc(callStatus[c.status])}</td></tr>`).join("")}</tbody></table></div>
+    ${button("Открыть журнал модели", "page", "usage", "link")}
+  </details>`;
+}
+
+function growthOperations(run) {
+  if (!run.operations.length) return "";
+  return `<details class="panel"><summary>Что искала и читала Qwen · ${run.operations.length} операций</summary>
+    <p class="by">Набор ${esc(run.corpus_version)} · запросы Qwen ранжируются с учётом исходного вопроса. Показаны первые совпадения.</p>
+    <ol class="finding-operations">${run.operations.map(op => op.op === "search" ?
+    `<li><strong>${esc(op.purpose)}</strong><p>«${esc(op.query)}» · ${esc(op.type)} · проверено ${op.searched}, найдено ${op.hits.length ? op.hits.join(", ") : "0"}</p></li>` :
+    `<li><strong>Открыта запись ${esc(op.record.id)}</strong> · ${esc(op.record.version)}
+      <div>${button(op.record.source, "fact", op.record.id, "link")}</div></li>`).join("")}</ol>
+    </details>`;
+}
+
+function growthResult(run) {
+  const r = run.result?.research;
+  if (!r) return `<section class="panel" role="status"><h2>${esc(radarStates[run.status])}</h2>
+    <p>${esc(run.error || "Можно перейти в «Мою работу». Уведомление вернёт сюда, когда вывод будет готов.")}</p>
+    ${run.status === "failed" ? button("Повторить исследование", "radar-retry", run.id, "primary") :
+      button("Перейти в «Мою работу»", "page", "work", "link")}
+    </section>${growthOperations(run)}${growthCost(run)}`;
+  const recommendation = r.recommendation === "отложить" ? "отложить запуск" : r.recommendation;
+  return `<section class="panel finding-result">
+    <div class="section-heading"><h2>Вывод Qwen</h2><div class="row">${chip(r.confidence)}
+      ${button(run.resolution ? "К решению PM" : "Принять решение", "finding-decision", "", "link")}</div></div>
+    ${researchClaim(r.conclusion, run)}
+    <h3>Аудитория для проверки</h3><p>${esc(r.audience)}</p>
+    <div class="grid finding-evidence"><article><h3>Что говорит за</h3>${researchClaim(r.for, run)}</article>
+      <article><h3>Что говорит против</h3>${researchClaim(r.against, run)}</article></div>
+    ${run.result.evidence.filter(row => row.kind === "competitor" && !r.against.sources.includes(row.id))
+      .map(row => `<h3>Альтернативный путь</h3>${researchClaim({text:row.text,sources:[row.id]},run)}`).join("")}
+    ${run.result.evidence.filter(row => row.kind === "backlog")
+      .map(row => `<h3>Запись бэклога</h3>${researchClaim({text:row.text,sources:[row.id]},run)}`).join("")}
+    <h3>Что пока неизвестно</h3><p>${esc(r.unknown)}</p>
+    <h3>Рекомендация · ${esc(recommendation)}</h3>${researchClaim(r.why, run)}
+  </section>${growthCost(run)}${growthOperations(run)}${growthDecision(run)}`;
+}
+
+function growthPage(id) {
+  const summary = state.data.growth;
+  if (!id) return `<div class="wide">${button("← Воронка", "page", "funnel", "link")}
+    <h1>Возможности роста</h1>
+    <section class="panel finding-list"><p class="eyebrow">После покупки · весь магазин</p>
+      <h2>${esc(summary.title)}</h2><p>Для кого следующий заказ стоит начинать из письма о предыдущей покупке?</p>
+      <p class="by">${summary.known ? "Есть отдельное интервью. Размер аудитории и платёжный эффект неизвестны." : "Адресные материалы доступны на LAN-стенде."}</p>
+      ${findingButton(null, summary.title)}
+    </section></div>`;
+  const item = detailForRoute();
+  if (!item) return `<h1>${esc(summary.title)}</h1>${radarLoading()}`;
+  const run = item.run;
+  const before = run?.before || item;
+  return `<div class="wide radar-page">${button("← Возможности роста", "page", "growth", "link")}
+    <p class="eyebrow">После покупки · весь магазин${run ? " · исследование " + esc(run.id.slice(0,8)) : ""}</p>
+    <h1>${esc(item.title)}</h1><p class="lede">${esc(run?.question || item.question)}</p>
+    ${messages()}
+    ${run?.result ? growthResult(run) : ""}
+    <section class="panel"><h2>Что было известно до запуска</h2>
+      ${before.known ? `<p>В одном интервью покупатель предложил начинать повтор из письма. Масштаб потребности и влияние на оплату предстоит выяснить.</p>
+        ${button("Открыть исходное интервью", "fact", before.known.id, "link")}` : "<p>Пока нет доступной исходной записи по письму.</p>"}
+      ${run || item.version ? `<p class="by">${Object.entries(before.coverage).map(([kind,count]) => esc(kind) + " " + count).join(" · ")}</p>` :
+        '<p class="by">Исследование доступно на защищённом LAN-стенде.</p>'}
+      ${!run && item.version ? '<form id="radar-growth-form" class="row actions"><button class="primary">Исследовать с Qwen</button></form>' : ""}
+    </section>
+    ${run && !run.result ? growthResult(run) : ""}
+    ${run?.resolution && item.version ? `<details class="panel" ${run.resolution.kind === "segment" ? "open" : ""}>
+      <summary>Исследовать другой сегмент</summary><form id="radar-growth-form" class="fields">
+      ${area("Уточнение сегмента", "question", "", 220, "required")}
+      <div><button class="primary">Исследовать уточнение с Qwen</button></div></form></details>` : ""}
+    ${item.runs.some(r=>r.id!==run?.id) ? `<details class="panel"><summary>Предыдущие исследования</summary>
+      ${item.runs.filter(r=>r.id!==run?.id).map(runRow).join("")}</details>` : ""}
+  </div>`;
 }
 
 function astraPage() {
@@ -214,17 +349,26 @@ function astraPage() {
 
 function catalogPage(id) {
   const selected = state.data.catalog[id];
-  if (selected) return `<div class="wide">${button("← Каталог", "page", "catalog", "link")}
+  if (selected) return `<div class="wide">${button("← Ассортимент", "page", "catalog", "link")}
     <p class="eyebrow">${esc(selected.stage)}</p><h1>${esc(selected.title)}</h1>
     <section class="panel"><h2>Доступные материалы</h2><p>${esc(selected.text)}</p><p class="by">${esc(selected.source)}</p>
     <p class="note">Нет истории заказов в выгрузке. Количественное сравнение семейств недоступно.</p></section></div>`;
-  return `<div class="wide"><h1>Каталог</h1><p class="lede">Покрытие зависит от семейства и этапа.</p>
-    <section class="panel"><h2>Количественные ветки</h2>
-      <div class="row">${button("Kaspersky · самостоятельные заказы", "deviation", "kes.aug.oct.all.all")}
-        ${button("Astra · прохождение подбора", "page", "astra")}</div></section>
-    <section class="panel"><h2>Товары с качественными материалами</h2>
-      ${Object.entries(state.data.catalog).map(([key,item])=>button(item.title, "catalog", key, "block-row")).join("")}
+  return `<div class="wide">${button("← Воронка", "page", "funnel", "link")}<h1>Ассортимент</h1>
+    <section class="panel"><label>Поиск продукта<input id="catalog-query" type="search" value="${esc(state.catalogQuery)}"></label>
+      <div id="catalog-matches">${catalogMatches()}</div>
     </section></div>`;
+}
+
+function catalogMatches() {
+  const entries = [
+    ["Kaspersky · самостоятельные заказы", "deviation", "kes.aug.oct.all.all"],
+    ["Astra · прохождение подбора", "page", "astra"],
+    ...Object.entries(state.data.catalog).map(([key,item]) => [item.title, "catalog", key])
+  ];
+  const query = (state.catalogQuery || "").trim().toLocaleLowerCase("ru");
+  return entries.filter(([title]) => title.toLocaleLowerCase("ru").includes(query))
+    .map(([title, action, key]) => button(title, action, key, "block-row")).join("") ||
+    '<p class="by" role="status">В доступном ассортименте совпадений нет.</p>';
 }
 
 function renderRadarNotice() {
@@ -246,17 +390,23 @@ async function pollRadar() {
     radarView.runs = await api("radar/runs");
     renderRadarNotice();
     const [page, id] = route();
-    if (page==="activity" && JSON.stringify(radarView.runs)!==previous) render();
-    const current = radarView.runs.find(run=>run.id===id);
+    if (["activity","work"].includes(page) && JSON.stringify(radarView.runs)!==previous) render();
+    const activeRun = page === "growth" ? detailForRoute()?.run : detailForRoute();
+    const current = radarView.runs.find(run=>run.id===(activeRun?.id || id));
     if (page==="research" && current && detailForRoute()?.status!==current.status)
+      void loadRadarDetail(radarDetailPath(page,id), true);
+    if (page === "growth" && activeRun && current && (activeRun.status !== current.status ||
+        (["queued","running"].includes(activeRun.status) && current.operation_count !== undefined &&
+          activeRun.operations.length !== current.operation_count && !dialog.open)))
       void loadRadarDetail(radarDetailPath(page,id), true);
   } catch (error) {
     if (error.status===401) void boot();
   } finally { radarView.polling = false; }
 }
 
-async function openRun(id) {
-  go("research",id);
+async function openRun(id, finding = radarView.runs.find(run => run.id === id)?.finding) {
+  if (finding) go("growth", findingRef(id));
+  else go("research",id);
   try {
     await api("radar/seen",{id});
     await pollRadar();
@@ -265,11 +415,14 @@ async function openRun(id) {
 
 async function startRadar(payload) {
   const run = await api("radar/start",payload);
-  await openRun(run.id);
+  if (run.finding && radarDetailPath(...route()) === radarDetailPath("growth", findingRef(run.id)))
+    await loadRadarDetail(radarDetailPath("growth", findingRef(run.id)), true);
+  await openRun(run.id, run.finding);
 }
 
 async function retryRadar() {
-  const run = detailForRoute();
+  const info = detailForRoute();
+  const run = info?.run || info;
   if (!run || run.status!=="failed") return;
   const question = run.question?.split(" Уточнение PM: ").slice(1).join(" Уточнение PM: ") || "";
   await startRadar({...run.filter,mode:run.mode,stage:run.stage,question});

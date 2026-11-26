@@ -15,9 +15,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 def add_journal(book, local, external):
     sheet = book.create_sheet("Журнал замера")
     sheet.append(["Контур", "Сценарий", "Задача", "Вызов", "Модель", "Вход", "Выход", "В кэше",
-                  "мс", "Фактически списано", "Валюта", "Подтверждение", "Статус", "ID генерации"])
-    columns = "ABCDEFGHIJKLMN"
-    sizes = (22, 23, 12, 10, 25, 11, 11, 11, 12, 20, 10, 27, 17, 39)
+                  "мс", "Фактически списано", "Валюта", "Подтверждение", "Статус", "ID генерации",
+                  "ID исследования", "Провайдер"])
+    columns = "ABCDEFGHIJKLMNOP"
+    sizes = (22, 23, 12, 10, 25, 11, 11, 11, 12, 20, 10, 27, 17, 39, 27, 17)
     for column, width in zip(columns, sizes, strict=True):
         sheet.column_dimensions[column].width = width
         cell = sheet[column+"1"]
@@ -37,7 +38,7 @@ def add_journal(book, local, external):
                           call["elapsed_ms"], float(cost) if cost is not None else None,
                           "USD" if is_external else "RUB",
                           call.get("receipt") if is_external else "usage llama.cpp; тариф 0",
-                          call["status"], call.get("generation")])
+                          call["status"], call.get("generation"), call.get("study"), call.get("platform")])
             sheet["J"+str(sheet.max_row)].number_format = "0.000000000"
     sheet.auto_filter.ref = sheet.dimensions
 

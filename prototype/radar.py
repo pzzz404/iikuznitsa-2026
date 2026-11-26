@@ -3,6 +3,7 @@ import logging
 import threading
 
 import funnel
+import growth_research
 from inference import study_funnel, funnel_study_identity
 from workflow import digest, now, usage_for, usage_sum
 
@@ -17,17 +18,6 @@ CATALOG = {
                  "source": "Конкурентное исследование · 02A_Продукты_x_Конкуренты, строка 29; 04_Покупка_Счет",
                  "text": "В материалах есть сравнение предложений, поиск товара и наблюдения по получению счёта."},
 }
-GROWTH_FACTS = [
-    {"id": "repeat-mail", "type": "Интервью", "title": "Повтор из письма",
-     "source": "Ответы по когортам · Малоактивные, K10 · обобщение",
-     "text": "Один покупатель предложил начинать повторную закупку из письма о прошлом заказе."},
-    {"id": "repeat-account", "type": "Конкурентное исследование", "title": "Повтор из истории",
-     "source": "Конкурентное исследование · 06_Личный_Кабинет, строки 9 и 14",
-     "text": "У X-Com и Комус в исследовании отмечен вход в повтор через личный кабинет."},
-]
-GROWTH_CRITERION = ("Взять покупателей с продлеваемыми лицензиями. Сравнить, как они находят и повторяют заказ "
-                    "из письма и из истории. Зафиксировать долю завершённых повторов и ошибки выбора лицензии.")
-GROWTH_LIMIT = "Размер аудитории продлений и эффект на оплаты неизвестны. Связь с конкретным семейством не подтверждена."
 FOLLOW_UP = ("После исправления сверить совпадение действия и события по идентификатору лицензии. "
              "На полных неделях с сопоставимым входом затем проверить динамику индекса и решить, продолжать ли наблюдение.")
 
@@ -53,7 +43,7 @@ def deviation(data, args):
     }
 
 
-def make_case(data, args):
+def make_case(data, args, corpus=()):
     mode = args.get("mode", "release")
     if mode == "release":
         item = deviation(data, args)
@@ -62,15 +52,7 @@ def make_case(data, args):
         case = item["case"]
         case["question"] = "Есть ли связь между падением самостоятельных заказов и релизом конфигуратора Kaspersky?"
     elif mode == "growth":
-        case = {
-            "filter": {}, "stage": "growth", "scope": {"этап": "Повторная закупка", "семейство": "Магазин"},
-            "question": "Откуда покупателям удобнее начинать повторную закупку?",
-            "supports": GROWTH_FACTS, "limitations": [
-                {"id": "repeat-unknown", "type": "Ограничение", "title": "Покрытие повтора неизвестно",
-                 "text": GROWTH_LIMIT, "source": "Softline v17 · ограничения выгрузки"}],
-            "candidate": None, "confirmation": GROWTH_LIMIT,
-            "action": "Сравнить повтор из письма и истории заказов", "criterion": GROWTH_CRITERION,
-            "historical_result": "В v17 нет платёжных исходов и отдельного ряда повторных покупок."}
+        case = growth_research.case_for(corpus)
     elif mode == "stage":
         case = funnel.study_case(data, args)
     else:
@@ -90,6 +72,12 @@ def setup(db):
         error TEXT, seen INTEGER NOT NULL DEFAULT 0, resolution TEXT
     )""")
     db.execute("UPDATE radar_runs SET status='queued' WHERE status='running'")
+    db.execute("""CREATE TABLE IF NOT EXISTS radar_operations (
+        id INTEGER PRIMARY KEY, run TEXT NOT NULL REFERENCES radar_runs(id), at TEXT NOT NULL, payload TEXT NOT NULL
+    )""")
+    db.execute("CREATE INDEX IF NOT EXISTS radar_ops_run ON radar_operations(run)")
+    db.execute("""UPDATE radar_runs SET status='failed',error='Исторический запуск относился к шаблону.'
+                  WHERE mode='growth' AND status='queued' AND json_extract(input,'$.finding') IS NULL""")
 
 
 def enqueue(db, mode, case):
@@ -111,7 +99,7 @@ def next_run(db):
     return None
 
 
-def worker(connect, daily_limit):
+def worker(connect, daily_limit, corpus):
     signal = threading.Event()
 
     def run():
@@ -126,7 +114,10 @@ def worker(connect, daily_limit):
                     with connect() as db:
                         saved = db.execute("SELECT id FROM studies WHERE id=?", (run_id,)).fetchone()
                     if not saved:
-                        study_funnel(case, connect, daily_limit)
+                        if case.get("finding") == growth_research.KEY:
+                            growth_research.synthesize(case, run_id, corpus, connect, daily_limit)
+                        else:
+                            study_funnel(case, connect, daily_limit)
                     with connect() as db:
                         db.execute("UPDATE radar_runs SET status='done',study=?,finished=? WHERE id=?",
                                    (run_id, now(), run_id))
@@ -152,12 +143,15 @@ def public_run(row):
     data = json.loads(row["input"])
     return {k: row[k] for k in ("id", "mode", "status", "created", "finished", "error", "seen", "subject")} | {
         "scope": data["scope"], "filter": data["filter"], "stage": data["stage"],
-        "question": data.get("question"), "resolution": json.loads(row["resolution"]) if row["resolution"] else None}
+        "question": data.get("question"), "finding": data.get("finding"),
+        "resolution": json.loads(row["resolution"]) if row["resolution"] else None}
 
 
 def recent(db):
-    rows = db.execute("SELECT * FROM radar_runs ORDER BY (status='done' AND seen=0) DESC, created DESC LIMIT 30")
-    return [public_run(row) for row in rows]
+    rows = db.execute("""SELECT r.*,
+                      (SELECT count(*) FROM radar_operations WHERE run=r.id) AS operation_count
+                      FROM radar_runs r ORDER BY (status='done' AND seen=0) DESC, created DESC LIMIT 30""")
+    return [public_run(row) | {"operation_count": row["operation_count"]} for row in rows]
 
 
 def view_run(db, run_id, include_result=True):
@@ -165,12 +159,38 @@ def view_run(db, run_id, include_result=True):
     if not row:
         return None
     run = public_run(row)
+    if include_result and run["finding"]:
+        case = json.loads(row["input"])
+        run["corpus_version"] = case["corpus_version"]
+        if "known" in case:
+            run["before"] = {"known": case["known"], "coverage": case["coverage"]}
+        run["operations"] = [json.loads(op["payload"]) | {"at": op["at"]} for op in db.execute(
+            "SELECT at,payload FROM radar_operations WHERE run=? ORDER BY id", (run_id,))]
+        run["calls"] = usage_for(db, run_id)
+        run["usage"] = usage_sum(run["calls"])
     if include_result and row["status"] == "done":
         study = db.execute("SELECT payload FROM studies WHERE id=?", (row["study"],)).fetchone()
         run["result"] = json.loads(study[0])
         run["result"]["calls"] = usage_for(db, row["study"])
         run["result"]["usage"] = usage_sum(run["result"]["calls"])
     return run
+
+
+def view_finding(db, corpus, ref):
+    finding = growth_research.finding(corpus)
+    rows = db.execute("""SELECT * FROM radar_runs WHERE json_extract(input,'$.finding')=?
+                         ORDER BY created DESC LIMIT 30""", (growth_research.KEY,)).fetchall()
+    finding["runs"] = [public_run(row) for row in rows]
+    if not ref:
+        for row in rows:
+            case = json.loads(row["input"])
+            if case["corpus_version"] == finding["version"] and case.get("format") == growth_research.FORMAT:
+                ref = row["id"]
+                break
+    finding["run"] = view_run(db, ref) if ref else None
+    if ref and (not finding["run"] or finding["run"]["finding"] != growth_research.KEY):
+        raise ValueError("У этой находки нет указанного исследования.")
+    return finding
 
 
 def mark_seen(db, run_id):
@@ -187,7 +207,8 @@ def resolve(db, args, save_task):
     if run["resolution"]:
         return run["resolution"]
     kind = args.get("kind")
-    if kind not in {"link", "new", "defer"}:
+    allowed = {"new", "segment", "defer"} if run["finding"] else {"link", "new", "defer"}
+    if kind not in allowed:
         raise ValueError("Выберите решение PM")
     result = run["result"]
     note, followup = args.get("note", ""), args.get("followup", "")
@@ -195,9 +216,9 @@ def resolve(db, args, save_task):
         raise ValueError("Проверьте длину решения и условия повторной проверки")
     resolution = {"kind": kind, "note": note.strip(), "followup": followup.strip(), "at": now(),
                   "task": None, "linked": None}
-    if kind == "defer":
+    if kind in {"defer", "segment"}:
         if not resolution["note"]:
-            raise ValueError("Укажите причину или условие возвращения к исследованию")
+            raise ValueError("Укажите, что нужно уточнить или когда вернуться к исследованию")
     else:
         if not resolution["followup"]:
             raise ValueError("Укажите условие последующей проверки")

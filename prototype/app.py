@@ -15,6 +15,7 @@ from urllib import parse, request
 import openrouter
 import funnel
 import radar
+import growth_research
 from evidence import ROOT, TOPICS, facts_and_tasks
 from inference import DECISIONS, ModelBusy, study, study_funnel
 from workflow import (EVENT_RESULTS, event_defaults, experiment, import_research, now, save_check, save_event_check, setup_workflow,
@@ -52,7 +53,7 @@ def connect():
 
 
 def setup():
-    global FACTS, IMPORTED, CRM, FUNNEL, RADAR_WAKE
+    global FACTS, IMPORTED, CRM, FUNNEL, RADAR_WAKE, RESEARCH_CORPUS
     if openrouter.ENABLED and (INVITES or not EVIDENCE_FILE or not os.getenv("PM_DATA_DIR")
                                or LOCAL.resolve() == (Path.home() / ".local/share/pm-hackathon").resolve()):
         raise RuntimeError("Для OpenRouter нужен отдельный локальный стенд с синтетическими данными")
@@ -71,6 +72,7 @@ def setup():
         FACTS, IMPORTED = facts_and_tasks()
         FUNNEL = funnel.load_history()
     CRM = cohort_balances(json.loads((ROOT / "demo/crm/synthetic_sales.json").read_text()))
+    RESEARCH_CORPUS = growth_research.load() if FUNNEL and not openrouter.ENABLED else []
     LOCAL.mkdir(parents=True, exist_ok=True, mode=0o700)
     with connect() as db:
         db.execute("CREATE TABLE IF NOT EXISTS studies (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
@@ -81,7 +83,7 @@ def setup():
         setup_workflow(db)
         if FUNNEL:
             radar.setup(db)
-    RADAR_WAKE = radar.worker(connect, LIMIT) if FUNNEL else None
+    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS) if FUNNEL else None
 
 
 def uploaded(db):
@@ -103,9 +105,10 @@ def task_details(db, row):
     task["plan"] = json.loads(stored[0]) if stored else defaults
     task["result"] = None if event_mode else experiment(task["plan"])
     if is_funnel and FUNNEL:
-        detail = db.execute("SELECT id,resolution FROM radar_runs WHERE study=? AND resolution IS NOT NULL", (task["study"],)).fetchone()
+        detail = db.execute("SELECT id,mode,resolution FROM radar_runs WHERE study=? AND resolution IS NOT NULL", (task["study"],)).fetchone()
         if detail:
-            task["radar"] = {"id": detail["id"], **json.loads(detail["resolution"])}
+            task["radar"] = {"id": detail["id"], "mode": detail["mode"], "finding": record.get("finding"),
+                             **json.loads(detail["resolution"])}
     return task
 
 
@@ -237,7 +240,8 @@ class Handler(BaseHTTPRequestHandler):
                                                 for r in IMPORTED],
                                    "crm": CRM, "sample": bool(EVIDENCE_FILE), "jury": bool(INVITES),
                                    "external": openrouter.ENABLED, "funnel": funnel.options(FUNNEL),
-                                   "catalog": radar.CATALOG if FUNNEL else {}, "growth": radar.GROWTH_FACTS if FUNNEL else [],
+                                   "catalog": radar.CATALOG if FUNNEL else {},
+                                   "growth": growth_research.finding(RESEARCH_CORPUS) if FUNNEL else None,
                                    "event_results": EVENT_RESULTS,
                                    "today": date.today().isoformat()})
         if path == "/api/funnel" and FUNNEL:
@@ -256,6 +260,8 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     if path == "/api/radar/runs":
                         return self.reply(radar.recent(db))
+                    if path == "/api/radar/finding":
+                        return self.reply(radar.view_finding(db, RESEARCH_CORPUS, args.get("id", "")))
                     if path == "/api/radar/run":
                         result = radar.view_run(db, args.get("id", ""))
                         if result:
@@ -264,8 +270,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply({"error": str(exc)}, status=400)
         if path == "/api/usage":
             with connect() as db:
+                query = """SELECT calls.*, json_extract(r.input,'$.finding') AS finding FROM calls
+                           LEFT JOIN radar_runs r ON r.id=calls.study""" if FUNNEL else "SELECT * FROM calls"
                 calls = [dict(row) for row in db.execute(
-                    "SELECT * FROM calls WHERE NOT ? OR scenario LIKE 'Воронка · %' ORDER BY id DESC LIMIT 200",
+                    query + " WHERE NOT ? OR scenario LIKE 'Воронка · %' ORDER BY calls.id DESC LIMIT 200",
                     (bool(INVITES and FUNNEL),))]
                 return self.reply({"calls": calls, "usage": usage_sum(calls)})
         if path == "/api/metrika":
@@ -318,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/funnel/study" and FUNNEL:
                 return self.reply(study_funnel(funnel.study_case(FUNNEL, data), connect, LIMIT))
             if path == "/api/radar/start" and FUNNEL:
-                mode, case = radar.make_case(FUNNEL, data)
+                mode, case = radar.make_case(FUNNEL, data, RESEARCH_CORPUS)
                 with connect() as db:
                     run = radar.enqueue(db, mode, case)
                 RADAR_WAKE.set()

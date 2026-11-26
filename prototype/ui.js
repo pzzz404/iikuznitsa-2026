@@ -11,6 +11,8 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, char =>
 const number = value => new Intl.NumberFormat("ru-RU", {maximumFractionDigits: 1}).format(value);
 const signed = value => (value > 0 ? "+" : "") + number(value).replace("-", "−");
 const seconds = ms => number(ms / 1000) + " с";
+const callStatus = {ok:"Готово",error:"Ошибка",no_result:"Без вывода",received:"Ответ получен",
+  running:"Выполняется",interrupted:"Прерван"};
 const prettyDate = val => val.split("-").reverse().join(".");
 const allFacts = () => [...state.data.facts, ...state.data.research];
 const taskLabel = id => "PM-" + String(id).padStart(3, "0");
@@ -65,11 +67,18 @@ function sourceCard(fact) {
 
 function openSource(id) {
   const radarInfo = detailForRoute();
+  const [page, ref] = route();
+  const task = ["backlog","checks"].includes(page) ? state.data.tasks.find(t => t.id === ref) : null;
+  const known = radarInfo?.run?.before ? radarInfo.run.before.known : radarInfo?.known;
   const fact = (radarInfo?.result?.evidence || radarInfo?.evidence)?.find(f => f.id === id) ||
-    currentStudy()?.evidence.find(f => f.id === id) || state.data.growth?.find(f => f.id === id) ||
+    radarInfo?.run?.operations.find(op => op.record?.id === id)?.record ||
+    (known?.id === id ? known : null) || task?.study_data.evidence.find(f => f.id === id) ||
+    currentStudy()?.evidence.find(f => f.id === id) ||
     allFacts().find(f => f.id === id);
   if (!fact) return;
   dialogBody.innerHTML = `<h2>${esc(fact.title)}</h2><p class="by">${esc(fact.source)}${fact.version ? " · " + esc(fact.version) : ""}${fact.date ? " · " + prettyDate(fact.date) : ""}</p>
+    ${fact.cohort ? `<p class="by">Когорта · ${esc(fact.cohort)}${fact.role ? " · " + esc(fact.role) : ""}</p>` : ""}
+    ${fact.derived ? '<p class="by">Сводка по указанным записям</p>' : ""}
     <blockquote>${esc(fact.text)}</blockquote>
     ${fact.image ? `<img alt="Фрагмент интерфейса магазина" src="/images/${esc(fact.image)}">` : ""}`;
   dialog.showModal();
@@ -150,7 +159,7 @@ function backlog(id) {
       ${task.radar ? `<p><strong>Решение PM</strong> · ${esc(decisionNames[task.radar.kind])}${task.radar.linked ? " · " + esc(task.radar.linked) : ""}</p>
         ${task.radar.note ? `<p>${esc(task.radar.note)}</p>` : ""}
         <p class="by">Условие последующей проверки · ${esc(task.radar.followup)}</p>
-        ${button("Открыть исследование", "run", task.radar.id, "link")}` : ""}
+        ${task.radar.finding ? findingButton(task.radar.id) : button("Открыть исследование", "run", task.radar.id, "link")}` : ""}
       <div class="row actions">${button("Открыть связанную проверку", "check", id, "primary")}</div>
       ${messages()}</section>
     <section class="context"><h2>Свидетельства в задаче</h2><div class="grid">${task.study_data.evidence.map(sourceCard).join("")}</div></section>
@@ -170,7 +179,7 @@ function backlog(id) {
 
 function checkResult(task) {
   const r = task.result;
-  return `<section class="panel" id="result"><div class="section-heading"><h2>После релиза</h2>${chip("Синтетический A/B")}</div>
+  return `<section class="panel" id="result"><div class="section-heading"><h2>После релиза</h2>${chip(r ? "Синтетический A/B" : "Ждём данные")}</div>
     ${r ? `<p class="big">${esc(r.outcome)}</p><dl class="summary-grid">
       <div><dt>Основная метрика</dt><dd>${signed(r.delta)} п. п.</dd></div>
       <div><dt>95% интервал</dt><dd>${signed(r.low)} … ${signed(r.high)} п. п.</dd></div>
@@ -191,7 +200,9 @@ function checks(id) {
   const p = task.plan;
   return `<div class="wide">${button("← " + taskLabel(id), "task", id, "link")}<p class="eyebrow">Проверка гипотезы · ${taskLabel(id)}</p>
     <h1>Эффект после релиза</h1><p class="lede">${esc(task.title)}</p>
+    ${task.radar?.finding ? `<div class="row">${findingButton(task.radar.id)} ${button("Моя работа", "page", "work", "link")}</div>` : ""}
     <section class="panel"><h2>До релиза</h2><p>${esc(task.criterion)}</p>
+      ${task.radar?.followup ? `<p><strong>Условие повторной проверки</strong> · ${esc(task.radar.followup)}</p>` : ""}
       <p class="by">Сначала собрать базовый уровень. Для A/B считать исходы в контрольной и тестовой группах за одно окно.</p>
       <div class="chips">${chip("Цель ≥ " + number(p.target) + " п. п.")}${chip("Защитный порог ≤ " + number(p.guard_max) + " п. п.")}</div></section>
     ${checkResult(task)}
@@ -256,9 +267,10 @@ function usagePage() {
     ${messages()}
     ${journal ? `<section class="recommend"><h2>Расход на показанные вызовы</h2>${usageSummary(journal.usage)}</section>
       <section class="panel"><h2>Последние вызовы</h2><div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Сценарий</th><th>Модель</th><th>Вход</th><th>Выход</th><th>Время</th>${state.data.external ? "<th>Списано, USD</th>" : ""}<th>Статус</th></tr></thead>
-      <tbody>${journal.calls.map(r => `<tr><td>#${r.id}</td><td>${esc(state.data.topics[r.scenario]?.title || r.scenario)}</td><td>${esc(r.model)}</td><td>${r.prompt_tokens ?? "—"}</td><td>${r.completion_tokens ?? "—"}</td><td>${r.elapsed_ms == null ? "—" : seconds(r.elapsed_ms)}</td>
-      ${state.data.external ? `<td>${esc(r.actual_cost ?? "—")}</td>` : ""}<td>${esc({ok:"Готово",error:"Ошибка",no_result:"Без вывода",received:"Ответ получен",running:"Выполняется",interrupted:"Прерван"}[r.status])}</td></tr>`).join("")}</tbody></table></div></section>` : '<p class="feedback">Открываю журнал…</p>'}
-      <p class="by footer">${state.data.external ? "Стоимость берётся из ответа OpenRouter." : "Цена входа и выхода в шаблоне · 0 ₽ за миллион токенов. Электричество и амортизация Beelink отдельно, замера нет."} Токены разработки Codex в этот журнал не входят.</p></div>`;
+      <tbody>${journal.calls.map(r => `<tr><td>#${r.id}</td><td>${esc(state.data.topics[r.scenario]?.title || r.scenario)}
+      ${r.finding ? `<div>${findingButton(r.study)}</div>` : ""}</td><td>${esc(r.model)}</td><td>${r.prompt_tokens ?? "—"}</td><td>${r.completion_tokens ?? "—"}</td><td>${r.elapsed_ms == null ? "—" : seconds(r.elapsed_ms)}</td>
+      ${state.data.external ? `<td>${esc(r.actual_cost ?? "—")}</td>` : ""}<td>${esc(callStatus[r.status])}</td></tr>`).join("")}</tbody></table></div></section>` : '<p class="feedback">Открываю журнал…</p>'}
+      <p class="by footer">${state.data.external ? "Стоимость берётся из ответа OpenRouter." : "Локальная плата за API · 0 RUB. Электричество и амортизация Beelink отдельно, замера нет."} Токены разработки Codex в этот журнал не входят.</p></div>`;
 }
 
 function render() {
@@ -267,15 +279,15 @@ function render() {
   nav.hidden = false;
   document.querySelector("#task-count").textContent = state.data.tasks.length;
   for (const item of nav.querySelectorAll("button")) {
-    const active = item.dataset.page === page;
+    const active = item.dataset.page === page || (item.dataset.page === "work" && ["backlog","checks","usage","activity"].includes(page));
     item.hidden = ((item.dataset.page === "funnel" || radarPages.includes(item.dataset.page)) && !state.data.funnel) ||
-                  (item.dataset.page === "signals" && Boolean(state.data.jury && state.data.funnel));
+                  (Boolean(state.data.funnel) && ["signals","backlog","checks","sources","usage"].includes(item.dataset.page));
     item.classList.toggle("active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   }
   app.innerHTML = {funnel: showFunnel, signals, backlog, checks, sources, usage: usagePage,
-    deviation:openDeviation, research:researchPage, activity:activityPage, astra:astraPage, growth:growthPage, catalog:catalogPage}[page](id);
+    deviation:openDeviation, research:researchPage, activity:activityPage, work:workPage, astra:astraPage, growth:growthPage, catalog:catalogPage}[page](id);
   const detailPath = radarDetailPath(page,id);
   if (detailPath && !state.error && !detailForRoute()) void loadRadarDetail(detailPath);
   if (page === "funnel" && !funnelView.report && !state.error) void loadFunnel();
@@ -324,6 +336,8 @@ document.addEventListener("click", async event => {
   if (d.fact) openSource(d.fact);
   if (d.deviation) go("deviation", d.deviation);
   if (d.catalog) go("catalog", d.catalog);
+  if (d.finding) go("growth", d.finding);
+  if (d.findingDecision !== undefined) document.querySelector("#finding-decision")?.focus();
   if (d.run) void openRun(d.run);
   if (d.radarRetry) {
     try { await retryRadar(); }
@@ -368,6 +382,12 @@ document.addEventListener("click", async event => {
 app.addEventListener("change", event => {
   if (event.target.matches("#funnel-filters select")) changeFunnelFilter(event.target.name, event.target.value);
 });
+app.addEventListener("input", event => {
+  if (event.target.id === "catalog-query") {
+    state.catalogQuery = event.target.value;
+    document.querySelector("#catalog-matches").innerHTML = catalogMatches();
+  }
+});
 
 app.addEventListener("submit", async event => {
   event.preventDefault();
@@ -381,14 +401,15 @@ app.addEventListener("submit", async event => {
     if (form.id === "radar-start-form") {
       await startRadar({...detailForRoute().filter, mode:"release", question:fields.question});
     } else if (form.id === "radar-growth-form") {
-      await startRadar({mode:"growth"});
+      await startRadar({mode:"growth", question:fields.question || ""});
     } else if (form.id === "radar-astra-form") {
       await startRadar({...detailForRoute().filter, mode:"stage", stage:"license"});
-    } else if (form.id === "radar-decision" || form.id === "radar-defer") {
-      const kind = form.id === "radar-defer" ? "defer" : submit.dataset.decision;
-      const resolution = await api("radar/resolve",{...fields,id,kind});
+    } else if (["radar-decision","radar-defer","radar-segment"].includes(form.id)) {
+      const kind = submit.dataset.decision || form.id.split("-")[1];
+      const resolution = await api("radar/resolve",{...fields,id:form.dataset.runId || id,kind});
       if (resolution.task) await refresh();
       await loadRadarDetail(radarDetailPath(page,id), true);
+      void pollRadar();
       return;
     } else if (form.id === "question-form") {
       const defaultQuestion = state.data.topics[state.topic].question;
