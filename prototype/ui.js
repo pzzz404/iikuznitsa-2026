@@ -70,12 +70,15 @@ function openSource(id) {
 
 function usageSummary(usage) {
   if (!usage.calls) return '<p class="muted">Для этой задачи журнал вызовов пуст.</p>';
+  const external = usage.usd_calls > 0;
+  const price = external ? (usage.usd === null ? "Нет замера" : esc(usage.usd) + " USD") : "0 ₽";
+  const billing = external ? ` · списание подтверждено для ${usage.usd_confirmed}/${usage.usd_calls} вызовов` : " · серверные расходы отдельно";
   return `<dl class="summary-grid">
     <div><dt>Вход</dt><dd>${number(usage.prompt)}</dd></div>
     <div><dt>Выход</dt><dd>${number(usage.completion)}</dd></div>
     <div><dt>Вызовы</dt><dd>${usage.measured}/${usage.calls}</dd></div>
-    <div><dt>По тарифу шаблона</dt><dd>0 ₽</dd></div></dl>
-    <p class="by">Вызовы с замером / всего · ${seconds(usage.elapsed_ms)} суммарно · серверные расходы отдельно</p>`;
+    <div><dt>${external ? "Списание OpenRouter" : "По тарифу шаблона"}</dt><dd>${price}</dd></div></dl>
+    <p class="by">Вызовы с замером / всего · ${seconds(usage.elapsed_ms)} суммарно${billing}</p>`;
 }
 
 function studied() {
@@ -107,18 +110,18 @@ function signals() {
   const active = state.data.deferred.find(d => d.topic === state.topic);
   const context = state.data.facts.filter(f => cfg.allowed.includes(f.id));
   return `<div class="shell"><aside class="rail"><h2>Сигналы магазина</h2>
-    ${Object.entries(state.data.topics).map(([id,t]) => `<button type="button" data-topic="${id}" class="signal ${id === state.topic ? "selected" : ""}">
+    ${Object.entries(state.data.topics).filter(([id]) => !state.data.external || id === "invoice").map(([id,t]) => `<button type="button" data-topic="${id}" class="signal ${id === state.topic ? "selected" : ""}">
       <small>${state.data.deferred.some(d => d.topic === id) ? "Отложен" : {invoice:"Оплата",repeat:"Удержание",cross:"Корзина",kes:"Динамика"}[id]}</small>
       <strong>${esc(t.title)}</strong><span>${esc(t.short)}</span></button>`).join("")}
     <section class="note preview"><h3>Ежедневные сигналы</h3><p class="by">Предпросмотр · доставка выключена</p>
       ${overdue.length ? `<p>${button("Открыть проверку " + taskLabel(overdue[0].id), "check", overdue[0].id, "link")}</p>` : '<p class="by">Проверок к сегодняшней дате нет</p>'}
     </section></aside>
-    <div><p class="eyebrow">${state.data.sample ? "Демонстрационный контур · обезличенные выдержки" : "Рабочий контур · исторические данные"}</p>
+    <div><p class="eyebrow">${state.data.external ? "Синтетический сценарий · OpenRouter" : state.data.sample ? "Демонстрационный контур · обезличенные выдержки" : "Рабочий контур · исторические данные"}</p>
     <h1>Что исследуем?</h1><p class="lede">Сверьте данные магазина, наблюдения и интервью. Сохраните решение с проверяемым критерием.</p>
     <form id="question-form" class="panel"><label for="question">Вопрос продукт-менеджера</label>
-      <div class="question-row"><input id="question" name="question" maxlength="350" minlength="3" required value="${esc(state.question)}">
+      <div class="question-row"><input id="question" name="question" maxlength="350" minlength="3" required ${state.data.external ? "readonly" : ""} value="${esc(state.question)}">
       <button class="primary" ${state.waiting ? "disabled" : ""}>${state.waiting ? "Модель разбирает…" : "Исследовать"}</button></div>
-      ${state.waiting ? '<p class="waiting feedback" role="status">Локальная Qwen читает свидетельства и выбирает следующий шаг.</p>' : ""}
+      ${state.waiting ? `<p class="waiting feedback" role="status">${state.data.external ? "Qwen через OpenRouter" : "Локальная Qwen"} читает свидетельства и выбирает следующий шаг.</p>` : ""}
       ${messages()}</form>
     ${studied()}
     ${!state.study && !state.waiting ? `<section class="context"><div class="section-heading"><h2>Контекст сигнала</h2><span class="by">${context.length} источника</span></div>
@@ -209,7 +212,7 @@ function sources() {
       <div class="grid">${state.data.facts.map(sourceCard).join("")}</div></section>
       ${research.length ? `<details class="panel"><summary>Добавленные исследования (${research.length})</summary>
       <div class="grid">${research.map(sourceCard).join("")}</div></details>` : ""}
-      ${!state.data.jury ? researchForm() : ""}` : ""}
+      ${!state.data.jury && !state.data.external ? researchForm() : ""}` : ""}
     ${mode === "crm" ? `<section class="panel"><h2>Сверка оплаченных заказов</h2><p class="muted">Синтетические заказы, платежи и возвраты.</p>
       <div class="table-wrap"><table><thead><tr><th>Когорта</th><th>Самостоятельно</th><th>С менеджером</th><th>Всего</th><th>Чистые поступления</th></tr></thead><tbody>
       ${state.data.crm.map(r => `<tr><td>${esc(r.cohort)}</td><td>${r.store}</td><td>${r.manager}</td><td>${r.total}</td><td>${number(r.net_rub)} ₽</td></tr>`).join("")}</tbody></table></div></section>` : ""}
@@ -236,13 +239,13 @@ function researchForm() {
 
 function usagePage() {
   const journal = state.journal;
-  return `<div class="wide"><h1>Журнал модели</h1><p class="lede">Фактический расход локальных разборов по данным сервера модели.</p>
+  return `<div class="wide"><h1>Журнал модели</h1><p class="lede">Фактический расход разборов по данным ${state.data.external ? "OpenRouter" : "локальной модели"}.</p>
     ${messages()}
     ${journal ? `<section class="recommend"><h2>Расход на показанные вызовы</h2>${usageSummary(journal.usage)}</section>
-      <section class="panel"><h2>Последние вызовы</h2><div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Сценарий</th><th>Модель</th><th>Вход</th><th>Выход</th><th>Время</th><th>Статус</th></tr></thead>
+      <section class="panel"><h2>Последние вызовы</h2><div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Сценарий</th><th>Модель</th><th>Вход</th><th>Выход</th><th>Время</th>${state.data.external ? "<th>Списано, USD</th>" : ""}<th>Статус</th></tr></thead>
       <tbody>${journal.calls.map(r => `<tr><td>#${r.id}</td><td>${esc(state.data.topics[r.scenario]?.title || r.scenario)}</td><td>${esc(r.model)}</td><td>${r.prompt_tokens ?? "—"}</td><td>${r.completion_tokens ?? "—"}</td><td>${r.elapsed_ms == null ? "—" : seconds(r.elapsed_ms)}</td>
-      <td>${esc({ok:"Готово",error:"Ошибка",no_result:"Без вывода",received:"Ответ получен",running:"Выполняется",interrupted:"Прерван"}[r.status])}</td></tr>`).join("")}</tbody></table></div></section>` : '<p class="feedback">Открываю журнал…</p>'}
-      <p class="by footer">Цена входа и выхода в шаблоне · 0 ₽ за миллион токенов. Электричество и амортизация Beelink отдельно, замера нет. Токены разработки Codex в этот журнал не входят.</p></div>`;
+      ${state.data.external ? `<td>${esc(r.actual_cost ?? "—")}</td>` : ""}<td>${esc({ok:"Готово",error:"Ошибка",no_result:"Без вывода",received:"Ответ получен",running:"Выполняется",interrupted:"Прерван"}[r.status])}</td></tr>`).join("")}</tbody></table></div></section>` : '<p class="feedback">Открываю журнал…</p>'}
+      <p class="by footer">${state.data.external ? "Стоимость берётся из ответа OpenRouter." : "Цена входа и выхода в шаблоне · 0 ₽ за миллион токенов. Электричество и амортизация Beelink отдельно, замера нет."} Токены разработки Codex в этот журнал не входят.</p></div>`;
 }
 
 function render() {
