@@ -1,4 +1,11 @@
 /.env
 /.env.*
-!/.env.example
-/calculator*.xlsx
+/.demo-data/
+/node_modules/
+/source/
+/research/
+/video/
+*.xlsx
+*.sqlite3*
+*.gguf
+__pycache__/
