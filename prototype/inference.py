@@ -5,6 +5,7 @@ import threading
 from time import monotonic
 from urllib import parse, request
 
+import openrouter
 from workflow import digest, now, shortlist, usage_for, usage_sum
 
 MODEL_URL = os.getenv("PM_LOCAL_MODEL_URL", "http://127.0.0.1:18764")
@@ -16,7 +17,8 @@ DECISIONS = {"measure": "Сначала измерить базовый уров
 
 def ask_model(question, topics, facts, scenario, request_key, connect, daily_limit):
     url = parse.urlsplit(MODEL_URL)
-    if url.hostname not in {"localhost", "127.0.0.1", "::1"} or url.scheme != "http":
+    api_key = openrouter.key() if openrouter.ENABLED else None
+    if not api_key and (url.hostname not in {"localhost", "127.0.0.1", "::1"} or url.scheme != "http"):
         raise RuntimeError("Разрешена локальная модель")
     if not MODEL_LOCK.acquire(blocking=False):
         raise ModelBusy("Модель выполняет другой запрос. Попробуйте через минуту.")
@@ -32,16 +34,24 @@ def ask_model(question, topics, facts, scenario, request_key, connect, daily_lim
                 (request_key,)
             ).fetchone()
             call_id = db.execute(
-                "INSERT INTO calls(study,scenario,model,started,status,request_key) VALUES (?,?,?,?,'running',?)",
-                (previous["study"] if previous else None, scenario, MODEL, started, request_key)
+                """INSERT INTO calls(study,scenario,model,started,status,request_key,platform,currency)
+                VALUES (?,?,?,?,'running',?,?,?)""",
+                (previous["study"] if previous else None, scenario, openrouter.MODEL if api_key else MODEL,
+                 started, request_key, "OpenRouter" if api_key else "llama.cpp", "USD" if api_key else "RUB")
             ).lastrowid
         t0 = monotonic()
         try:
-            reply = completion(question, topics, facts)
-        except (OSError, ValueError) as exc:
-            finish(connect, call_id, t0, {}, "error")
-            raise RuntimeError("Локальная модель недоступна. Повторите разбор после её запуска.") from exc
-        finish(connect, call_id, t0, reply.get("usage") or {}, "received", reply.get("model"))
+            reply = completion(question, topics, facts, api_key)
+        except (OSError, ValueError, RuntimeError) as exc:
+            finish(connect, call_id, t0, {}, "error", {})
+            if api_key and isinstance(exc, RuntimeError):
+                raise
+            message = "Не удалось получить ответ OpenRouter." if api_key else "Локальная модель недоступна. Повторите разбор после её запуска."
+            raise RuntimeError(message) from exc
+        usage, billing = openrouter.receipt(reply, api_key) if api_key else (reply.get("usage") or {}, {"actual_cost":"0"})
+        alias = reply.get("model")
+        label = alias if api_key else (f"{MODEL} / {alias}" if alias else MODEL)
+        finish(connect, call_id, t0, usage, "received", billing, label)
         return call_id, reply
     finally:
         MODEL_LOCK.release()
@@ -51,23 +61,24 @@ class ModelBusy(RuntimeError):
     pass
 
 
-def finish(connect, call_id, t0, usage, status, alias=None):
+def finish(connect, call_id, t0, usage, status, billing, model=None):
     with connect() as db:
         db.execute(
             """UPDATE calls SET elapsed_ms=?, prompt_tokens=?, completion_tokens=?,
-            cached_tokens=?, status=?, model=? WHERE id=?""",
+            cached_tokens=?, status=?, model=coalesce(?,model), generation=?, actual_cost=?,
+            receipt=?, upstream=? WHERE id=?""",
             (round(1000*(monotonic()-t0)), usage.get("prompt_tokens"), usage.get("completion_tokens"),
-             (usage.get("prompt_tokens_details") or {}).get("cached_tokens"), status,
-             f"{MODEL} / {alias}" if alias else MODEL, call_id)
+             (usage.get("prompt_tokens_details") or {}).get("cached_tokens"), status, model, billing.get("generation"),
+             billing.get("actual_cost"), billing.get("receipt"), billing.get("upstream"), call_id)
         )
 
 
-def completion(question, topics, facts):
+def completion(question, topics, facts, api_key):
     ids = [f["id"] for f in facts]
     properties = {
-        "topic": {"enum": list(topics) + ["unknown"]},
-        "first": {"enum": ids}, "second": {"enum": ids},
-        "decision": {"enum": list(DECISIONS)}, "focus": {"type": "string"},
+        "topic": {"type": "string", "enum": list(topics) + ["unknown"]},
+        "first": {"type": "string", "enum": ids}, "second": {"type": "string", "enum": ids},
+        "decision": {"type": "string", "enum": list(DECISIONS)}, "focus": {"type": "string"},
     }
     schema = {"type": "object", "properties": properties, "required": list(properties),
               "additionalProperties": False}
@@ -83,6 +94,8 @@ def completion(question, topics, facts):
     body = {"model": "pm-local", "messages": [{"role": "user", "content": prompt}],
             "temperature": 0, "max_tokens": 112,
             "response_format": {"type": "json_schema", "json_schema": {"name": "evidence", "schema": schema}}}
+    if api_key:
+        return openrouter.complete(body, api_key)
     req = request.Request(MODEL_URL.rstrip("/") + "/v1/chat/completions",
                           data=json.dumps(body, ensure_ascii=False).encode(),
                           headers={"Content-Type": "application/json"})
@@ -121,7 +134,8 @@ def study(question, hint, base, topics, uploaded, connect, daily_limit):
     record = {"id": study_id, "question": question, "topic": topic,
               "selected": selected, "evidence": [next(f for f in facts if f["id"] == item) for item in selected],
               "retrieved": [f for f in added if f["topic"] == topic],
-              "decision": choice["decision"], "focus": focus, "model": MODEL + " · локально"}
+              "decision": choice["decision"], "focus": focus,
+              "model": openrouter.MODEL + " · OpenRouter" if openrouter.ENABLED else MODEL + " · локально"}
     with connect() as db:
         existing = db.execute(
             """SELECT s.id FROM studies s JOIN tasks t ON t.study=s.id

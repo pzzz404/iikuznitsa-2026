@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import parse, request
 
+import openrouter
 from evidence import ROOT, TOPICS, facts_and_tasks
 from inference import DECISIONS, ModelBusy, study
 from workflow import (experiment, import_research, now, save_check, setup_workflow,
@@ -25,7 +26,7 @@ LOCAL = Path(os.getenv("PM_DATA_DIR", Path.home() / ".local/share/pm-hackathon")
 INVITES = os.getenv("PM_INVITES")
 PUBLIC_ORIGIN = os.getenv("PM_PUBLIC_ORIGIN")
 EVIDENCE_FILE = os.getenv("PM_EVIDENCE_FILE")
-LIMIT = int(os.getenv("PM_MODEL_DAILY_LIMIT", "16")) if INVITES else 0
+LIMIT = 4 if openrouter.ENABLED else (int(os.getenv("PM_MODEL_DAILY_LIMIT", "16")) if INVITES else 0)
 TAG = "сгенерирована ИИ-помощником"
 DB = LOCAL / "backlog.sqlite3"
 COOKIE = "__Host-pm-jury"
@@ -49,11 +50,16 @@ def connect():
 
 def setup():
     global FACTS, IMPORTED, CRM
+    if openrouter.ENABLED and (INVITES or not EVIDENCE_FILE or not os.getenv("PM_DATA_DIR")
+                               or LOCAL.resolve() == (Path.home() / ".local/share/pm-hackathon").resolve()):
+        raise RuntimeError("Для OpenRouter нужен отдельный локальный стенд с синтетическими данными")
     if INVITES and not (EVIDENCE_FILE and PUBLIC_ORIGIN and os.getenv("PM_DATA_DIR")
                         and os.getenv("PM_LOCAL_MODEL_URL") and LIMIT > 0):
         raise RuntimeError("Для жюри нужны каталог, источник демо, свой адрес модели, HTTPS и лимит")
     if EVIDENCE_FILE:
         sample = json.loads(Path(EVIDENCE_FILE).read_text())
+        if openrouter.ENABLED and sample.get("mode") != "synthetic-openrouter":
+            raise RuntimeError("OpenRouter принимает только синтетический набор")
         FACTS, IMPORTED = sample["facts"], sample["tasks"]
     else:
         FACTS, IMPORTED = facts_and_tasks()
@@ -183,6 +189,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in static:
             name, kind = static[path]
             return self.reply((HERE / name).read_bytes(), kind + "; charset=utf-8")
+        if path == "/fonts/manrope.ttf":
+            return self.reply((HERE / "fonts/manrope.ttf").read_bytes(), "font/ttf")
         if not self.authorized():
             return self.denied()
         if path == "/api/data":
@@ -198,6 +206,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "imported": [{"id": r["task_id"], "title": r["title"], "status": r["status"]}
                                                 for r in IMPORTED],
                                    "crm": CRM, "sample": bool(EVIDENCE_FILE), "jury": bool(INVITES),
+                                   "external": openrouter.ENABLED,
                                    "today": date.today().isoformat()})
         if path == "/api/usage":
             with connect() as db:
@@ -243,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
                 q = " ".join(data.get("question", "").split())
                 if not 3 <= len(q) <= 350:
                     raise ValueError("Введите вопрос длиной от 3 до 350 символов")
+                if openrouter.ENABLED and (q != TOPICS["invoice"]["question"] or data.get("topic") != "invoice"):
+                    raise ValueError("Для замера OpenRouter выберите готовый сценарий о самостоятельном счёте.")
                 with connect() as db:
                     research = [] if INVITES else uploaded(db)
                 return self.reply(study(q, data.get("topic"), FACTS, TOPICS, research, connect, LIMIT))
@@ -263,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Выберите будущую дату")
                     db.execute("INSERT OR REPLACE INTO deferred VALUES (?,?,?)", (topic, until, reason))
                     response = {"ok": True}
-                elif path == "/api/research" and not INVITES:
+                elif path == "/api/research" and not INVITES and not openrouter.ENABLED:
                     response = import_research(db, data.get("items"), TOPICS)
                 else:
                     return self.reply({"error": "Неизвестное действие"}, status=404)

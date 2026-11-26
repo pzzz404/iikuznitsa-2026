@@ -3,6 +3,7 @@ import json
 import math
 import re
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 
 def now():
@@ -31,8 +32,10 @@ def setup_workflow(db):
             topic TEXT PRIMARY KEY, until_date TEXT NOT NULL, reason TEXT NOT NULL
         );
     """)
-    if "request_key" not in {row[1] for row in db.execute("PRAGMA table_info(calls)")}:
-        db.execute("ALTER TABLE calls ADD COLUMN request_key TEXT")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(calls)")}
+    for field in ("request_key", "platform", "generation", "actual_cost", "currency", "receipt", "upstream"):
+        if field not in columns:
+            db.execute(f"ALTER TABLE calls ADD COLUMN {field} TEXT")
     db.execute("CREATE INDEX IF NOT EXISTS calls_request ON calls(request_key)")
     db.execute("UPDATE calls SET status='interrupted' WHERE status='running'")
 
@@ -85,10 +88,14 @@ def usage_for(db, study):
 
 def usage_sum(calls):
     measured = [c for c in calls if c["prompt_tokens"] is not None and c["completion_tokens"] is not None]
+    external = [c for c in calls if c["currency"] == "USD"]
+    charged = [Decimal(c["actual_cost"]) for c in external if c["actual_cost"] is not None]
     return {"calls": len(calls), "measured": len(measured),
             "prompt": sum(c["prompt_tokens"] for c in measured),
             "completion": sum(c["completion_tokens"] for c in measured),
-            "elapsed_ms": sum(c["elapsed_ms"] or 0 for c in calls), "rub": 0}
+            "elapsed_ms": sum(c["elapsed_ms"] or 0 for c in calls), "rub": 0,
+            "usd": format(sum(charged, Decimal(0)), "f") if charged else None,
+            "usd_calls": len(external), "usd_confirmed": len(charged)}
 
 
 def verification_defaults(metric):
