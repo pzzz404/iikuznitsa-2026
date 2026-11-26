@@ -33,6 +33,40 @@
 .funnel-delta.down { color: var(--accent); }
 .funnel-delta.up { color: #12613f; }
 .funnel-map-note { margin-top: 6px; }
+.radar-signal { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.radar-signal.down { border-color: #d9a3af; background: #fbf0f3; }
+.radar-signal.down h2 { color: var(--accent); }
+.radar-signal.up { border-color: #a5c6b6; background: #f0f7f2; }
+.radar-signal.up h2 { color: #12613f; }
+.radar-signal h2 { margin: 3px 0 6px; }
+.radar-signal .by { margin-top: 5px; }
+.radar-signal button { white-space: nowrap; }
+.radar-coverage { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.radar-coverage h2 { margin-bottom: 4px; }
+.radar-page h1 { font-size: clamp(32px, 3.3vw, 48px); }
+.radar-page section p + p { margin-top: 7px; }
+.radar-versions { padding-left: 21px; margin-block: 6px 9px; }
+.radar-versions li + li { margin-top: 3px; }
+.radar-related { display: flex; align-items: baseline; gap: 7px 11px; flex-wrap: wrap; margin-block: 6px; }
+.radar-run-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }
+.radar-run-row + .radar-run-row { border-top: 1px solid var(--line); }
+.radar-run-row .by { display: block; }
+.radar-evidence { margin: 12px 0; }
+.radar-evidence .source-card { height: calc(100% - 29px); }
+.radar-resolution button { margin-top: 10px; }
+.radar-weekly { display: grid; grid-template-columns: repeat(auto-fit,minmax(110px,1fr)); gap: 8px; margin-top: 12px; }
+.radar-weekly div { display: grid; gap: 2px; }
+.radar-weekly meter { width: 100%; }
+#radar-count:not(:empty) { padding: 1px 6px; border-radius: 9px; background: var(--accent-light); color: var(--accent); }
+#radar-notice { position: fixed; right: 22px; bottom: 20px; z-index: 2; max-width: min(410px, calc(100% - 44px));
+  padding: 13px 17px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); box-shadow: 0 6px 24px #21242421; border-radius: var(--radius); }
+#radar-notice p { color: var(--muted); }
+#radar-notice button { margin-top: 2px; }
+@media(max-width: 680px) {
+  .radar-signal, .radar-coverage { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .radar-signal button { white-space: normal; }
+}
 .funnel-hypothesis { padding-left: 22px; border-left: 1px solid var(--line); }
 .funnel-hypothesis button { margin-top: 10px; }
 .funnel-details { margin-top: 14px; }

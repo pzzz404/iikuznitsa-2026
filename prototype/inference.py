@@ -110,9 +110,9 @@ def send_completion(prompt, schema, api_key):
 def funnel_completion(question, case, api_key):
     candidate = case["candidate"]
     checks = {"reproduce": "Воспроизвести шаг", "event": "Сверить успешное действие и событие",
-              "join": "Проверить, есть ли общий идентификатор"}
+              "join": "Проверить, есть ли общий идентификатор", "pilot": "Сравнить способы повторной закупки"}
     available = {"license": ["reproduce", "event"], "cart": ["event", "reproduce"],
-                 "order": ["event", "join"], "paid": ["join"]}[case["stage"]]
+                 "order": ["event", "join"], "paid": ["join"], "growth": ["pilot"]}[case["stage"]]
     options = {"support": [r["id"] for r in case["supports"]],
                "counter": [r["id"] for r in case["limitations"]],
                "related": [candidate["id"], "none"] if candidate else ["none"], "check": available}
@@ -131,13 +131,17 @@ def funnel_completion(question, case, api_key):
     return send_completion(prompt, schema, api_key)
 
 
+def funnel_study_identity(case):
+    key = digest(["funnel", case["filter"], case["stage"], case.get("question")])
+    return key, digest([key, case])
+
+
 def study_funnel(case, connect, daily_limit):
     if openrouter.ENABLED:
         raise ValueError("Разбор истории v17 доступен через локальную модель.")
     scope = case["scope"]
-    question = f"Что проверить на этапе «{scope['этап']}» для {scope['семейство']}?"
-    key = digest(["funnel", case["filter"], case["stage"]])
-    study_id = digest([key, case])
+    question = case.get("question") or f"Что проверить на этапе «{scope['этап']}» для {scope['семейство']}?"
+    key, study_id = funnel_study_identity(case)
     scenario = f"Воронка · {scope['семейство']} · {scope['этап']}"
     call, reply = ask_model(question, {}, [], scenario, key, connect, daily_limit, case=case)
     try:

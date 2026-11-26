@@ -39,6 +39,7 @@ async function refresh() {
 function route() {
   const [page, id] = location.hash.slice(1).split("/");
   const hasFunnel = state.data?.funnel;
+  if (hasFunnel && radarPages.includes(page)) return [page, id];
   const available = pages.includes(page) && (page !== "funnel" || hasFunnel) &&
                     (page !== "signals" || !(state.data?.jury && hasFunnel));
   return [available ? page : hasFunnel ? "funnel" : "signals", Number(id)];
@@ -63,7 +64,10 @@ function sourceCard(fact) {
 }
 
 function openSource(id) {
-  const fact = currentStudy()?.evidence.find(f => f.id === id) || allFacts().find(f => f.id === id);
+  const radarInfo = detailForRoute();
+  const fact = (radarInfo?.result?.evidence || radarInfo?.evidence)?.find(f => f.id === id) ||
+    currentStudy()?.evidence.find(f => f.id === id) || state.data.growth?.find(f => f.id === id) ||
+    allFacts().find(f => f.id === id);
   if (!fact) return;
   dialogBody.innerHTML = `<h2>${esc(fact.title)}</h2><p class="by">${esc(fact.source)}${fact.version ? " · " + esc(fact.version) : ""}${fact.date ? " · " + prettyDate(fact.date) : ""}</p>
     <blockquote>${esc(fact.text)}</blockquote>
@@ -143,6 +147,10 @@ function backlog(id) {
     <h1>${esc(task.title)}</h1><p class="lede">${esc(task.study_data.question)}</p>
     <section class="panel"><h2>Критерий приёмки</h2><p>${esc(task.criterion)}</p>
       ${task.study_data.topic === "funnel" ? shownRelated(task.study_data) : ""}
+      ${task.radar ? `<p><strong>Решение PM</strong> · ${esc(decisionNames[task.radar.kind])}${task.radar.linked ? " · " + esc(task.radar.linked) : ""}</p>
+        ${task.radar.note ? `<p>${esc(task.radar.note)}</p>` : ""}
+        <p class="by">Условие последующей проверки · ${esc(task.radar.followup)}</p>
+        ${button("Открыть исследование", "run", task.radar.id, "link")}` : ""}
       <div class="row actions">${button("Открыть связанную проверку", "check", id, "primary")}</div>
       ${messages()}</section>
     <section class="context"><h2>Свидетельства в задаче</h2><div class="grid">${task.study_data.evidence.map(sourceCard).join("")}</div></section>
@@ -176,7 +184,7 @@ function checkResult(task) {
 
 function checks(id) {
   const task = state.data.tasks.find(t => t.id === id);
-  if (task?.study_data.topic === "funnel") return eventCheck(task);
+  if (task?.study_data.topic === "funnel" && task.study_data.stage !== "growth") return eventCheck(task);
   if (!task) return `<div class="wide"><h1>Проверки</h1><p class="lede">Планы и решения после релиза по задачам бэклога.</p><section class="panel">
     ${state.data.tasks.map(t => button(taskLabel(t.id) + " · " + t.title, "check", t.id, "block-row")).join("") ||
     '<p>Сначала сохраните задачу из разбора.</p>'}</section></div>`;
@@ -260,13 +268,16 @@ function render() {
   document.querySelector("#task-count").textContent = state.data.tasks.length;
   for (const item of nav.querySelectorAll("button")) {
     const active = item.dataset.page === page;
-    item.hidden = (item.dataset.page === "funnel" && !state.data.funnel) ||
+    item.hidden = ((item.dataset.page === "funnel" || radarPages.includes(item.dataset.page)) && !state.data.funnel) ||
                   (item.dataset.page === "signals" && Boolean(state.data.jury && state.data.funnel));
     item.classList.toggle("active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   }
-  app.innerHTML = {funnel: showFunnel, signals, backlog, checks, sources, usage: usagePage}[page](id);
+  app.innerHTML = {funnel: showFunnel, signals, backlog, checks, sources, usage: usagePage,
+    deviation:openDeviation, research:researchPage, activity:activityPage, astra:astraPage, growth:growthPage, catalog:catalogPage}[page](id);
+  const detailPath = radarDetailPath(page,id);
+  if (detailPath && !state.error && !detailForRoute()) void loadRadarDetail(detailPath);
   if (page === "funnel" && !funnelView.report && !state.error) void loadFunnel();
   if (page === "usage" && !state.loadingJournal && !state.journal) {
     state.loadingJournal = true;
@@ -284,9 +295,11 @@ async function boot() {
     try { await api("invite", {token}); }
     catch (error) { state.error = error.message; }
   }
-  try { await refresh(); render(); }
+  try { await refresh(); render(); void pollRadar(); }
   catch (error) {
     state.data = null;
+    radarView.runs = [];
+    renderRadarNotice();
     nav.hidden = true;
     app.innerHTML = `<div class="wide"><h1>${error.status === 401 ? "Доступ для жюри" : "Прототип недоступен"}</h1><p class="lede">${esc(state.error || error.message)}</p></div>`;
   }
@@ -309,12 +322,27 @@ document.addEventListener("click", async event => {
   if (d.task) go("backlog", d.task);
   if (d.check) go("checks", d.check);
   if (d.fact) openSource(d.fact);
+  if (d.deviation) go("deviation", d.deviation);
+  if (d.catalog) go("catalog", d.catalog);
+  if (d.run) void openRun(d.run);
+  if (d.radarRetry) {
+    try { await retryRadar(); }
+    catch (error) { state.error = error.message; render(); }
+  }
   if (d.funnelStage) {
-    Object.assign(funnelView, {stage: d.funnelStage, study: null});
+    funnelView.stage = d.funnelStage;
     state.error = "";
     render();
   }
   if (d.funnelStudy !== undefined) void runFunnelStudy();
+  if (d.radarRelated) {
+    const detail = detailForRoute();
+    const item = detail?.related || detail?.result?.related || detail?.result?.candidate;
+    if (item?.id === d.radarRelated) {
+      dialogBody.innerHTML = `<h2>${esc(item.id)} · ${esc(item.title)}</h2><p>${esc(item.status)}</p><p class="by">Softline v17 · Бэклог_задачи</p>`;
+      dialog.showModal();
+    }
+  }
   if (d.related) {
     const item = currentStudy()?.related;
     if (item?.id === d.related) {
@@ -346,19 +374,31 @@ app.addEventListener("submit", async event => {
   const form = event.target;
   const fields = Object.fromEntries(new FormData(form));
   const [page, id] = route();
-  const submit = form.querySelector("button");
+  const submit = event.submitter || form.querySelector("button");
   submit.disabled = true;
   state.error = state.notice = "";
   try {
-    if (form.id === "question-form") {
+    if (form.id === "radar-start-form") {
+      await startRadar({...detailForRoute().filter, mode:"release", question:fields.question});
+    } else if (form.id === "radar-growth-form") {
+      await startRadar({mode:"growth"});
+    } else if (form.id === "radar-astra-form") {
+      await startRadar({...detailForRoute().filter, mode:"stage", stage:"license"});
+    } else if (form.id === "radar-decision" || form.id === "radar-defer") {
+      const kind = form.id === "radar-defer" ? "defer" : submit.dataset.decision;
+      const resolution = await api("radar/resolve",{...fields,id,kind});
+      if (resolution.task) await refresh();
+      await loadRadarDetail(radarDetailPath(page,id), true);
+      return;
+    } else if (form.id === "question-form") {
       const defaultQuestion = state.data.topics[state.topic].question;
       Object.assign(state, {question: fields.question, study: null, waiting: true, journal: null});
       render();
       state.study = await api("study", {question: fields.question, topic: fields.question === defaultQuestion ? state.topic : null});
       state.topic = state.study.topic;
-    } else if (form.id === "create-task" || form.id === "funnel-task" || form.id === "edit-task") {
+    } else if (form.id === "create-task" || form.id === "edit-task") {
       const edit = form.id === "edit-task";
-      const studyId = edit ? state.data.tasks.find(t => t.id === id).study : currentStudy()?.id || state.study.id;
+      const studyId = edit ? state.data.tasks.find(t => t.id === id).study : state.study.id;
       const task = await api("task", {...fields, study:studyId, edit});
       await refresh();
       go("backlog", task.id);
@@ -404,3 +444,4 @@ app.addEventListener("submit", async event => {
 });
 
 boot();
+setInterval(pollRadar, 2000);

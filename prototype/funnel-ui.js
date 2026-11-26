@@ -1,11 +1,8 @@
 "use strict";
 
-const funnelView = {report: null, filter: null, stage: "cart", loading: false, waiting: false, study: null};
+const funnelView = {report: null, filter: null, stage: "order", loading: false, waiting: false};
 const funnelStages = {
   license: "Выбор лицензии", cart: "Корзина", order: "Самостоятельный заказ", paid: "Оплата",
-};
-const checksByModel = {
-  event: "Сверить действие и событие", reproduce: "Воспроизвести шаг", join: "Проверить общий идентификатор",
 };
 
 function selectField(label, key, choices, value, attrs = "") {
@@ -37,7 +34,6 @@ function changeFunnelFilter(key, value) {
     if (windows[funnelView.filter[slot]].weeks !== windows[value].weeks)
       funnelView.filter[slot] = Object.keys(windows).find(id => windows[id].slot === slot && windows[id].weeks === windows[value].weeks);
   }
-  funnelView.study = null;
   funnelView.report = null;
   state.error = "";
   void loadFunnel();
@@ -89,6 +85,76 @@ function measuredDetails(r) {
   </details>`;
 }
 
+function ordersDetail(report) {
+  const entries = Object.entries(report.orders).filter(([,item])=>item);
+  if (!entries.length) return "";
+  const windows = state.data.funnel.windows;
+  const {before,after} = report.filter;
+  const weekly = [...report.series.before,...report.series.after];
+  const max = weekly.length ? Math.ceil(Math.max(...weekly.map(row=>row.value))/100)*100 : 100;
+  return `<details class="panel"><summary>Сравнение семейств и недельный ряд</summary>
+    <div class="table-wrap"><table><thead><tr><th>Семейство</th><th>${esc(windows[before].label)}</th>
+      <th>${esc(windows[after].label)}</th><th>Изменение</th></tr></thead><tbody>
+      ${entries.map(([family,item])=>`<tr><td>${esc(state.data.funnel.families[family])}</td>
+      <td>${number(item.before)}</td><td>${number(item.after)}</td><td>${signed(item.change)}%</td></tr>`).join("")}
+    </tbody></table></div><p class="by">${esc(report.order_source)}. База 100 · 04.05–28.06.2026 для каждого семейства.</p>
+    ${weekly.length ? `<div class="radar-weekly">${weekly.map(row=>`<div><span>${esc(prettyDate(row.date).slice(0,5))}</span>
+      <meter min="0" max="${max}" value="${row.value}" aria-label="Индекс заказов"></meter><strong>${number(row.value)}</strong></div>`).join("")}</div>` :
+      "<p class='muted'>Недельный ряд остаётся в закрытой книге. В демо доступны средние индексы согласованных окон.</p>"}
+  </details>`;
+}
+
+function stageSummary(r, chosen, comparator, other, status, gate) {
+  const stage = funnelView.stage;
+  const pair = r.pairs.after?.cfg_add_to_cart_rate;
+  const step = r.steps.after[0];
+  const reach = r.pairs.after?.cfg_reach_rate;
+  const model = state.data.funnel;
+  const defaultAction = label => `<button type="button" data-funnel-study class="primary" ${gate ? "disabled" : ""}>${label}</button>`;
+  if (stage === "order" && chosen) {
+    const direction = chosen.change < 0 ? "↓" : chosen.change > 0 ? "↑" : "·";
+    const label = `Самостоятельные заказы ${r.family_name} ${direction} ${number(Math.abs(chosen.change))}%`;
+    return `<section class="panel radar-signal ${status[1]}"><div>
+      <p class="label">Самостоятельный заказ · ${esc(status[0])}</p><h2>${esc(label)}</h2>
+      <p>Индекс BI <strong>${number(chosen.before)} → ${number(chosen.after)}</strong>.
+        ${comparator ? `${esc(model.families[other])} ${signed(comparator.change)}% за те же недели.` : ""}</p>
+      <p class="by">${esc(model.windows[r.filter.before].label)} и ${esc(model.windows[r.filter.after].label)}.
+        ${model.windows[r.filter.before].weeks} полных недель в каждом окне. Индексы двух семейств.</p>
+    </div><div>${r.filter.family==="kes" ? button("Открыть отклонение", "deviation", deviationRef(r.filter), "primary") :
+      button("Где меняется прохождение?", "page", "astra", "secondary")}</div></section>`;
+  }
+  const stageInfo = {
+    license: {title:"Используют ли подбор?", text:step ? `Шаг 1 → 2 · ${cellRatio(step)}` :
+      reach ? `Визиты к конфигуратору / визиты страниц семейств · ${cellRatio(reach)}. Календарные дни и устройства покрыты не полностью.` : "Нет счётчиков шагов выбора.",
+      note:r.filter.family==="kes" ? "У Kaspersky фильтры без последовательных шагов. Сравнение использования до запуска недоступно." :
+        "Проверить вход в подбор и переходы отдельно.", action:`<div class="row">
+          ${r.filter.family==="kes" ? defaultAction("Проверить использование фильтров") : ""}
+          ${button("Где меняется прохождение?", "page", "astra", "secondary")}</div>`},
+    cart: {title:"Добавляли ли товар в корзину?", text:pair ? `Визиты с добавлением / визиты с открытием · ${cellRatio(pair)}` : r.cart_gap,
+      note:r.filter.family==="kes" ? "Связанная T-08 касается передачи событий. Первый шаг — сверить действие и запись." :
+        "Доля относится к открытиям конфигуратора в доступных строках.", action:defaultAction("Сверить события корзины")},
+    order: {title:"Самостоятельные заказы", text:r.orders_gap, note:r.order_gap, action:""},
+    paid: {title:"Дошёл ли заказ до оплаты?", text:r.payment_gap,
+      note:"Для измерения нужны исход оплаты, канал и общее связывающее поле.", action:defaultAction("Проверить связь с оплатой")},
+  }[stage];
+  return `<section class="panel funnel-priority"><div><h2>${esc(stageInfo.title)}</h2>
+    <p>${esc(r.audience_gap || stageInfo.text)}</p><p class="by">${esc(stageInfo.note)}</p>
+  </div><div class="funnel-hypothesis">${r.audience_gap ? "" : stageInfo.action}</div></section>
+  ${stage==="license" && r.filter.family==="kes" && !r.audience_gap ? optionDetail(r) : ""}`;
+}
+
+function optionDetail(r) {
+  const labels = {edition:"Редакция",duration:"Срок",license_type:"Тип лицензии"};
+  const groups = Object.entries(r.options || {});
+  return `<details class="panel"><summary>Выбор редакций, сроков и типов лицензии</summary>
+    ${groups.length ? groups.map(([key,values])=>{
+      const total = Object.values(values).reduce((sum, v)=>sum+v,0);
+      return `<h3>${labels[key]}</h3>${Object.entries(values).map(([name,n])=>`<p>${esc(name)} · ${ratio({n,d:total})}</p>`).join("")}`;
+    }).join("") : "<p>Для этого среза нет доступных распределений опций.</p>"}
+    <p class="by">Softline v17 · cfg_option_share. Знаменатель — сумма записей по значениям одной группы. Это не число покупателей.</p>
+  </details>`;
+}
+
 function showFunnel() {
   const model = state.data.funnel;
   const r = funnelView.report;
@@ -126,16 +192,6 @@ function showFunnel() {
     order: [status[0], chosen ? `Индекс · ${number(chosen.before)} → ${number(chosen.after)}` : r.orders_gap, status[1]],
     paid: ["Пробел учёта", r.payment_gap, "gap"],
   };
-  const subject = funnelView.stage === "cart" ? "Связь с корзиной" : funnelStages[funnelView.stage];
-  const context = f.family === "kes"
-    ? "После релиза подбора возможны сбой шага, потеря события или изменение состава визитов после смены входа."
-    : "Динамика заказов может отражать состав покупателей. События конфигуратора и заказы живут в отдельных источниках.";
-  const next = {
-    license: "Пройти шаги выбора и сверить, где прерывается путь.",
-    cart: "Сверить фактическое добавление с событием корзины.",
-    order: "Проверить корзину и наличие общего идентификатора заказа.",
-    paid: "Запросить связку заказа, счёта и факта оплаты.",
-  }[funnelView.stage];
   return `${headline}${filter}
     ${unavailable ? `<p class="note" role="status">${esc(unavailable)}</p>` : ""}
     <ol class="funnel-stages" aria-label="Путь покупки">
@@ -146,28 +202,19 @@ function showFunnel() {
       </button></li>`).join("")}
     </ol>
     <p class="by funnel-map-note">Карта пути покупки. Сквозной выборки от выбора лицензии до оплаты в v17 нет.</p>
-    <section class="panel funnel-priority"><div class="funnel-observation">
-      <span class="label">${esc(subject)} · ${esc(r.family_name)}</span>
-      <h2>${funnelView.stage === "cart" && !cart ? "Где теряется корзина?" : esc(next)}</h2>
-      ${chosen ? `<p><strong class="funnel-delta ${status[1]}">${signed(chosen.change)}%</strong>
-            <span class="by"> средний индекс самостоятельных заказов · ${number(chosen.before)} → ${number(chosen.after)}</span></p>
-         ${comparator ? `<p class="by">За те же недели ${esc(model.families[other])} ${signed(comparator.change)}% · ${number(comparator.before)} → ${number(comparator.after)}</p>` : ""}` :
-        `<p class="muted">${esc(r.orders_gap)}</p>`}
-      <p class="by">${esc(r.order_gap)}</p>
-    </div><div class="funnel-hypothesis"><p><strong>Альтернативное объяснение</strong> · ${esc(context)}</p>
-      <p><strong>Следующий шаг</strong> · ${esc(next)}</p>
-      <button type="button" data-funnel-study class="primary" ${gate ? "disabled" : ""}>
-        ${funnelView.waiting ? "Модель разбирает…" : "Исследовать"}</button>
-    </div></section>
-    ${funnelView.waiting ? '<p class="waiting feedback" role="status">Передаю локальной Qwen этап, сегмент и два периода.</p>' : ""}
+    ${stageSummary(r, chosen, comparator, other, status, gate)}
     ${messages()}
-    ${funnelView.study ? funnelStudyResult(funnelView.study) : ""}
-    ${!unavailable ? measuredDetails(r) : ""}`;
+    ${funnelView.stage === "order" ? ordersDetail(r) : ""}
+    ${!unavailable && funnelView.stage !== "order" ? measuredDetails(r) : ""}
+    <section class="panel radar-coverage"><div><h2>Покрытие магазина</h2>
+      <p>Индексы заказов только у Kaspersky и Astra. В других ветках есть материалы по товарам.</p></div>
+      <div class="row">${button("Каталог", "page", "catalog")}${button("Возможности роста", "page", "growth")}</div>
+    </section>`;
 }
 
 function currentStudy() {
-  const [page, id] = route();
-  return page === "funnel" ? funnelView.study : state.data.tasks.find(t => t.id === id)?.study_data;
+  const [, id] = route();
+  return state.data.tasks.find(t => t.id === id)?.study_data;
 }
 
 function shownRelated(item) {
@@ -176,41 +223,18 @@ function shownRelated(item) {
   return "";
 }
 
-function funnelStudyResult(item) {
-  return `<section id="funnel-analysis" class="recommend">
-    <div class="section-heading"><h2>Разбор выбранного этапа</h2>${chip(item.model)}</div>
-    <p class="by">${esc(Object.values(item.scope).flat().join(" · "))}</p>
-    <div class="grid funnel-study-grid">
-      ${item.evidence.map((fact, i) => `<div><h3>${i ? "Ограничение вывода" : "Наблюдение в пользу проверки"}</h3>${sourceCard(fact)}</div>`).join("")}
-    </div>
-    <p>${esc(item.confirmation)}</p>
-    ${shownRelated(item)}
-    ${item.recommended_check ? `<p><strong>Модель предложила</strong> · ${esc(checksByModel[item.recommended_check])}</p>` : ""}
-    <details><summary>Расход модели</summary>${usageSummary(item.usage)}</details>
-  </section><form id="funnel-task" class="panel fields">
-    <div><h2>Утвердить связанную задачу</h2><p class="by">PM утверждает критерий проверки и решает, когда данных достаточно для отката.</p></div>
-    ${field("Название", "title", item.action, 'required maxlength="180"')}
-    ${area("Критерий приёмки", "criterion", item.criterion, 1200, "required")}
-    <div class="row"><button class="primary">Сохранить в бэклог</button>${chip(state.data.tag)}</div>
-  </form>`;
-}
-
 async function runFunnelStudy() {
   if (funnelView.waiting || funnelView.loading || !funnelView.report || funnelView.report.audience_gap) return;
   funnelView.waiting = true;
-  funnelView.study = null;
   state.error = "";
   render();
   try {
-    funnelView.study = await api("funnel/study", {...funnelView.report.filter, stage: funnelView.stage});
+    await startRadar({...funnelView.report.filter, stage: funnelView.stage, mode:"stage"});
   } catch (error) {
     if (error.status === 401) return boot();
     state.error = error.message;
   } finally { funnelView.waiting = false; }
-  if (route()[0] === "funnel") {
-    render();
-    document.querySelector("#funnel-analysis")?.scrollIntoView({block:"start"});
-  }
+  if (route()[0] === "funnel") render();
 }
 
 function eventCheck(task) {
@@ -219,7 +243,8 @@ function eventCheck(task) {
   return `<div class="wide">${button("← " + taskLabel(task.id), "task", task.id, "link")}
     <p class="eyebrow">Проверка после релиза · ${taskLabel(task.id)}</p>
     <h1>Сверка действия и события</h1><p class="lede">${esc(task.title)}</p>
-    <section class="panel"><h2>Правило проверки</h2><p>${esc(task.criterion)}</p>${shownRelated(task.study_data)}</section>
+    <section class="panel"><h2>Правило проверки</h2><p>${esc(task.criterion)}</p>${shownRelated(task.study_data)}
+      ${task.radar?.followup ? `<p class="by">Условие повторной проверки · ${esc(task.radar.followup)}</p>` : ""}</section>
     <section class="panel" id="result">
       <h2>Статус данных</h2><p>${esc(task.study_data.historical_result)}</p>
       <p class="by">Фактический результат заносит PM по журналу тестовых действий.</p>

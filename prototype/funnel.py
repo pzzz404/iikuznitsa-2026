@@ -1,6 +1,7 @@
 """Comparable purchase signals from v17 and the approved jury aggregates."""
 
 import json
+from collections import Counter
 from datetime import date, timedelta
 from statistics import mean
 
@@ -54,22 +55,33 @@ def load_history():
             if family:
                 indices[(family, str(row["week_start"])[:10])] = row["orders_index"]
         metrics = {}
+        option_rows = {}
         for row in read_rows(book["Метрики_данные"]):
             metric, product = row["metric_id"], row["product"]
+            day = str(row["date"])[:10]
+            if metric == "cfg_family_views" and product in PRODUCTS.values():
+                metrics[(product, metric, row["segment"], day)] = row["value"]
+            if metric == "cfg_option_share" and product == PRODUCTS["kes"]:
+                option_rows[(row["segment"], day)] = json.loads(row["detail_json"])["visits_by_value"]
             if metric not in {*PAIRS, "cfg_step_dropoff"} or product not in PRODUCTS.values():
                 continue
-            metrics[(product, metric, row["segment"], str(row["date"])[:10])] = json.loads(row["detail_json"])
+            metrics[(product, metric, row["segment"], day)] = json.loads(row["detail_json"])
 
-        orders, ratios, steps = {}, {}, {}
+        orders, ratios, steps, series, visits = {}, {}, {}, {}, {}
+        option_counts = {}
         for family, product in PRODUCTS.items():
             orders[family], ratios[family] = {}, {}
+            series[family], visits[family] = {}, {}
             for key, window in WINDOWS.items():
                 dates = weeks(window)
                 index = [indices[(family, w)] for w in dates if indices.get((family, w)) is not None]
                 if len(index) == len(dates):
                     orders[family][key] = mean(index)
+                    series[family][key] = [{"date": day, "value": value} for day, value in zip(dates,index,strict=True)]
                 start = date.fromisoformat(window["start"])
                 days = [(start + timedelta(days=i)).isoformat() for i in range(7 * len(dates))]
+                visits[family][key] = {d: value for d in DEVICES if d != "all"
+                                       and (value := family_visits(metrics, product, days, d))}
                 ratios[family][key] = {
                     metric: {device: value for device in DEVICES
                              if (value := metric_pair(metrics, product, metric, days, device, *fields))}
@@ -78,9 +90,18 @@ def load_history():
                     chain = astra_steps(metrics, product, dates)
                     if chain:
                         steps[key] = chain
+                else:
+                    option_counts[key] = {}
+                    for group in ("edition", "duration", "license_type"):
+                        values = Counter()
+                        for day in dates:
+                            values.update(option_rows.get((group, day), {}))
+                        if values:
+                            option_counts[key][group] = dict(values.most_common())
         task = next(row for row in read_rows(book["Бэклог_задачи"]) if row["task_id"] == "T-08")
         releases = {r["release_id"]: str(r["release_date"])[:10] for r in read_rows(book["Релизы"])}
-        return {"orders": orders, "ratios": ratios, "steps": steps, "released": releases["R-09"],
+        return {"orders": orders, "ratios": ratios, "steps": steps, "series": series, "visits": visits,
+                "option_counts": option_counts, "released": releases["R-09"],
                 "login": releases["R-08"], "task": {"id": task["task_id"], "title": task["title"],
                                                     "status": task["status"]}, "jury": False}
     finally:
@@ -97,6 +118,12 @@ def metric_pair(metrics, product, metric, dates, device, numerator, denominator)
     return {"n": n, "d": d, "rows": len(rows), "expected_rows": len(dates)*len(segments)}
 
 
+def family_visits(metrics, product, days, device):
+    rows = [metrics[(product, "cfg_family_views", device, day)] for day in days
+            if (product, "cfg_family_views", device, day) in metrics]
+    return {"total": sum(rows), "days": len(rows), "expected": len(days)} if rows else None
+
+
 def astra_steps(metrics, product, dates):
     rows = [metrics[(product, "cfg_step_dropoff", "all", w)]["visits_reached_step"]
             for w in dates if (product, "cfg_step_dropoff", "all", w) in metrics]
@@ -108,12 +135,16 @@ def astra_steps(metrics, product, dates):
 
 
 def jury_aggregates(history):
-    # Only the approval scope: the two six-week indexes and Astra's two named transitions.
+    # Named aggregates from the approved brief. Keep raw series and rows in the closed workspace.
     return {"jury": True, "released": history["released"], "login": history["login"],
             "orders": {f: {k: history["orders"][f][k] for k in ("aug", "oct")} for f in FAMILIES},
             "steps": {k: history["steps"][k][:1] for k in ("oct12", "oct19")},
-            "ratios": {}, "task": {"id": "T-08", "title": "Проверить передачу событий электронной торговли",
-                                    "status": "Открыта"}}
+            "ratios": {
+                "kes": {"oct": {"cfg_reach_rate": {"all": history["ratios"]["kes"]["oct"]["cfg_reach_rate"]["all"]}}},
+                "astra": {"oct": {"cfg_add_to_cart_rate": {"all": history["ratios"]["astra"]["oct"]["cfg_add_to_cart_rate"]["all"]}}},
+            },
+            "visits": {"astra": {key: {"desktop": history["visits"]["astra"][key]["desktop"]} for key in ("oct12","oct19")}},
+            "task": {"id": "T-08", "title": "Проверить передачу событий электронной торговли", "status": "Открыта"}}
 
 
 def options(data):
@@ -159,6 +190,8 @@ def report(data, args):
     show_steps = family == "astra" and device == "all" and not audience_gap
     steps = {"before": data["steps"].get(before, []) if show_steps and not tracking_break else [],
              "after": data["steps"].get(after, []) if show_steps else []}
+    visits = data.get("visits", {}).get(family, {}) if not audience_gap else {}
+    series = data.get("series", {}).get(family, {}) if orders else {}
     missing_orders = (audience_gap or ("В BI v17 нет поля устройства." if device != "all" else
                       ("Для этих недель нет разрешённого индекса в демовыборке." if data["jury"] else
                        "Для сравнения нужны индексы всех недель в каждом периоде.")))
@@ -167,6 +200,9 @@ def report(data, args):
         "В выбранном срезе нет пары счётчиков добавлений и открытий.")
     return {"filter": params, "family_name": FAMILIES[family], "jury": data["jury"],
             "orders": orders, "pairs": pairs, "steps": steps, "audience_gap": audience_gap,
+            "visits": {"before": {} if tracking_break else visits.get(before, {}), "after": visits.get(after, {})},
+            "series": {"before": series.get(before, []), "after": series.get(after, [])},
+            "options": data.get("option_counts", {}).get(after, {}) if family=="kes" and device=="all" and not audience_gap else {},
             "orders_gap": missing_orders, "cart_gap": cart_gap, "order_gap": MISSING_ORDER,
             "payment_gap": MISSING_PAYMENT, "tracking_break": tracking_break, "login": data["login"],
             "released": data["released"], "order_source": ORDER_SOURCE, "metric_source": METRIC_SOURCE}

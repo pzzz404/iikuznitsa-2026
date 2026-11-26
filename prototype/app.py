@@ -14,6 +14,7 @@ from urllib import parse, request
 
 import openrouter
 import funnel
+import radar
 from evidence import ROOT, TOPICS, facts_and_tasks
 from inference import DECISIONS, ModelBusy, study, study_funnel
 from workflow import (EVENT_RESULTS, event_defaults, experiment, import_research, now, save_check, save_event_check, setup_workflow,
@@ -51,7 +52,7 @@ def connect():
 
 
 def setup():
-    global FACTS, IMPORTED, CRM, FUNNEL
+    global FACTS, IMPORTED, CRM, FUNNEL, RADAR_WAKE
     if openrouter.ENABLED and (INVITES or not EVIDENCE_FILE or not os.getenv("PM_DATA_DIR")
                                or LOCAL.resolve() == (Path.home() / ".local/share/pm-hackathon").resolve()):
         raise RuntimeError("Для OpenRouter нужен отдельный локальный стенд с синтетическими данными")
@@ -78,6 +79,9 @@ def setup():
             title TEXT NOT NULL, criterion TEXT NOT NULL, created TEXT NOT NULL
         )""")
         setup_workflow(db)
+        if FUNNEL:
+            radar.setup(db)
+    RADAR_WAKE = radar.worker(connect, LIMIT) if FUNNEL else None
 
 
 def uploaded(db):
@@ -93,9 +97,15 @@ def task_details(db, row):
     task["usage"] = usage_sum(task["calls"])
     stored = db.execute("SELECT payload FROM checks WHERE task=?", (task["id"],)).fetchone()
     is_funnel = record["topic"] == "funnel"
-    defaults = event_defaults() if is_funnel else verification_defaults(TOPICS[record["topic"]]["measure"])
+    event_mode = is_funnel and record.get("stage") != "growth"
+    metric = (TOPICS["repeat"]["measure"] if is_funnel else TOPICS[record["topic"]]["measure"])
+    defaults = event_defaults() if event_mode else verification_defaults(metric)
     task["plan"] = json.loads(stored[0]) if stored else defaults
-    task["result"] = None if is_funnel else experiment(task["plan"])
+    task["result"] = None if event_mode else experiment(task["plan"])
+    if is_funnel and FUNNEL:
+        detail = db.execute("SELECT id,resolution FROM radar_runs WHERE study=? AND resolution IS NOT NULL", (task["study"],)).fetchone()
+        if detail:
+            task["radar"] = {"id": detail["id"], **json.loads(detail["resolution"])}
     return task
 
 
@@ -198,7 +208,8 @@ class Handler(BaseHTTPRequestHandler):
         target = parse.urlsplit(self.path)
         path = target.path
         static = {"/": ("index.html", "text/html"), "/style.css": ("style.css", "text/css"),
-                  "/ui.js": ("ui.js", "application/javascript"), "/funnel-ui.js": ("funnel-ui.js", "application/javascript")}
+                  "/ui.js": ("ui.js", "application/javascript"), "/funnel-ui.js": ("funnel-ui.js", "application/javascript"),
+                  "/radar-ui.js": ("radar-ui.js", "application/javascript")}
         if path in static:
             name, kind = static[path]
             return self.reply((HERE / name).read_bytes(), kind + "; charset=utf-8")
@@ -226,12 +237,29 @@ class Handler(BaseHTTPRequestHandler):
                                                 for r in IMPORTED],
                                    "crm": CRM, "sample": bool(EVIDENCE_FILE), "jury": bool(INVITES),
                                    "external": openrouter.ENABLED, "funnel": funnel.options(FUNNEL),
+                                   "catalog": radar.CATALOG if FUNNEL else {}, "growth": radar.GROWTH_FACTS if FUNNEL else [],
                                    "event_results": EVENT_RESULTS,
                                    "today": date.today().isoformat()})
         if path == "/api/funnel" and FUNNEL:
             try:
                 params = dict(parse.parse_qsl(target.query, max_num_fields=12))
                 return self.reply(funnel.report(FUNNEL, params))
+            except ValueError as exc:
+                return self.reply({"error": str(exc)}, status=400)
+        if path.startswith("/api/radar/") and FUNNEL:
+            try:
+                args = dict(parse.parse_qsl(target.query, max_num_fields=12))
+                if path == "/api/radar/deviation":
+                    result = radar.deviation(FUNNEL, args)
+                    result.pop("case")
+                    return self.reply(result)
+                with connect() as db:
+                    if path == "/api/radar/runs":
+                        return self.reply(radar.recent(db))
+                    if path == "/api/radar/run":
+                        result = radar.view_run(db, args.get("id", ""))
+                        if result:
+                            return self.reply(result)
             except ValueError as exc:
                 return self.reply({"error": str(exc)}, status=400)
         if path == "/api/usage":
@@ -289,6 +317,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(study(q, data.get("topic"), FACTS, TOPICS, research, connect, LIMIT))
             if path == "/api/funnel/study" and FUNNEL:
                 return self.reply(study_funnel(funnel.study_case(FUNNEL, data), connect, LIMIT))
+            if path == "/api/radar/start" and FUNNEL:
+                mode, case = radar.make_case(FUNNEL, data)
+                with connect() as db:
+                    run = radar.enqueue(db, mode, case)
+                RADAR_WAKE.set()
+                return self.reply(run, status=202)
             with connect() as db:
                 if path == "/api/task":
                     response = save_task(db, data)
@@ -298,7 +332,8 @@ class Handler(BaseHTTPRequestHandler):
                                           (task_id,)).fetchone()
                     if not accessible_study(existing):
                         raise ValueError("Задача не найдена")
-                    is_funnel = json.loads(existing[0])["topic"] == "funnel"
+                    record = json.loads(existing[0])
+                    is_funnel = record["topic"] == "funnel" and record.get("stage") != "growth"
                     plan = save_event_check(db, task_id, data) if is_funnel else save_check(db, task_id, data)
                     response = {"plan": plan, "result": None if is_funnel else experiment(plan)}
                 elif path == "/api/defer" and not (INVITES and FUNNEL):
@@ -311,6 +346,11 @@ class Handler(BaseHTTPRequestHandler):
                     response = {"ok": True}
                 elif path == "/api/research" and not INVITES and not openrouter.ENABLED:
                     response = import_research(db, data.get("items"), TOPICS)
+                elif path == "/api/radar/seen" and FUNNEL:
+                    radar.mark_seen(db, data.get("id", ""))
+                    response = {"ok": True}
+                elif path == "/api/radar/resolve" and FUNNEL:
+                    response = radar.resolve(db, data, save_task)
                 else:
                     return self.reply({"error": "Неизвестное действие"}, status=404)
             return self.reply(response)
