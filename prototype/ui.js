@@ -278,12 +278,21 @@ async function boot() {
   }
   try { await refresh(); render(); }
   catch (error) {
+    state.data = null;
     nav.hidden = true;
     app.innerHTML = `<div class="wide"><h1>${error.status === 401 ? "Доступ для жюри" : "Прототип недоступен"}</h1><p class="lede">${esc(state.error || error.message)}</p></div>`;
   }
 }
 
-window.addEventListener("hashchange", () => { state.error = ""; state.notice = ""; render(); });
+window.addEventListener("hashchange", () => {
+  state.error = "";
+  state.notice = "";
+  if (new URLSearchParams(location.hash.slice(1)).has("invite")) {
+    void boot();
+    return;
+  }
+  render();
+});
 document.querySelector("#close-dialog").addEventListener("click", () => dialog.close());
 document.addEventListener("click", async event => {
   const d = event.target.closest("button")?.dataset;

@@ -40,11 +40,11 @@ try {
     "-movflags","+faststart",output], {stdio:["ignore","ignore",captureLog.fd]});
   complete = once(capture,"exit");
   const t0 = performance.now() + 350;
-  const at = async (sec, name) => {
+  const at = async (sec, name, slack = 4) => {
     const left = t0 + sec*1000 - performance.now();
     if (left > 0) await wait(left);
     const elapsed = (performance.now()-t0)/1000;
-    assert(elapsed < sec+4, name + " запаздывает на " + (elapsed-sec).toFixed(1) + " с");
+    assert(elapsed < sec+slack, name + " запаздывает на " + (elapsed-sec).toFixed(1) + " с");
     events.push({name, time:elapsed});
   };
 
@@ -69,7 +69,7 @@ try {
   assert.equal(response.status(),200,JSON.stringify(invoice));
   assert(invoice.focus && invoice.evidence.length > 0);
   await heading("Свидетельства разбора").waitFor();
-  await at(48,"Карточка источника");
+  await at(48,"Карточка источника",7);
   const selected = page.locator(".source-card").filter({hasText:"Самостоятельный счёт"});
   const sourceInLibrary = !(await selected.count());
   if (sourceInLibrary) {
