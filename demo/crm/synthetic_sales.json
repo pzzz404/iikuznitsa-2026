@@ -1,0 +1,69 @@
+{
+  "dataset": "demo_crm_v1",
+  "provenance": "Синтетический пример команды. Все операции, идентификаторы, даты и суммы придуманы для проверки прототипа.",
+  "data_as_of": "2025-06-30T00:00:00Z",
+  "currency": "RUB",
+  "cohorts_by_order_creation": [
+    {"id": "02–08 июня", "from": "2025-06-02", "until_exclusive": "2025-06-09"},
+    {"id": "09–15 июня", "from": "2025-06-09", "until_exclusive": "2025-06-16"}
+  ],
+  "payment_window_days": 7,
+  "crm": {
+    "columns": ["order_id", "company_id", "invoice_id", "created_at", "closing_channel", "invoice_rub", "journey_id"],
+    "rows": [
+      ["DEMO-O01","DEMO-C01","DEMO-I01","2025-06-02T10:00:00Z","store",10000,"DEMO-J01"],
+      ["DEMO-O02","DEMO-C02","DEMO-I02","2025-06-03T10:00:00Z","store",20000,"DEMO-J02"],
+      ["DEMO-O03","DEMO-C03","DEMO-I03","2025-06-04T10:00:00Z","store",30000,"DEMO-J03"],
+      ["DEMO-O04","DEMO-C04","DEMO-I04","2025-06-05T10:00:00Z","manager",40000,null],
+      ["DEMO-O05","DEMO-C05","DEMO-I05","2025-06-09T10:00:00Z","store",10000,"DEMO-J05"],
+      ["DEMO-O06","DEMO-C06","DEMO-I06","2025-06-10T10:00:00Z","manager",20000,"DEMO-J06"],
+      ["DEMO-O07","DEMO-C07","DEMO-I07","2025-06-11T10:00:00Z","manager",30000,null],
+      ["DEMO-O08","DEMO-C08","DEMO-I08","2025-06-12T10:00:00Z","manager",40000,null],
+      ["DEMO-O09","DEMO-C09","DEMO-I09","2025-06-10T11:00:00Z","store",50000,"DEMO-J09"],
+      ["DEMO-O10","DEMO-C10","DEMO-I10","2025-06-11T11:00:00Z","store",15000,"DEMO-J10"]
+    ]
+  },
+  "billing": {
+    "columns": ["transaction_id", "invoice_id", "occurred_at", "kind", "amount_rub"],
+    "rows": [
+      ["DEMO-T01","DEMO-I01","2025-06-03T09:00:00Z","payment",10000],
+      ["DEMO-T02","DEMO-I02","2025-06-04T09:00:00Z","payment",20000],
+      ["DEMO-T03","DEMO-I03","2025-06-05T09:00:00Z","payment",30000],
+      ["DEMO-T04","DEMO-I04","2025-06-06T09:00:00Z","payment",40000],
+      ["DEMO-T05","DEMO-I05","2025-06-10T09:00:00Z","payment",4000],
+      ["DEMO-T06","DEMO-I05","2025-06-11T09:00:00Z","payment",6000],
+      ["DEMO-T07","DEMO-I06","2025-06-12T09:00:00Z","payment",20000],
+      ["DEMO-T08","DEMO-I07","2025-06-12T09:00:00Z","payment",30000],
+      ["DEMO-T09","DEMO-I08","2025-06-16T09:00:00Z","payment",40000],
+      ["DEMO-T10","DEMO-I09","2025-06-23T09:00:00Z","payment",50000],
+      ["DEMO-T11","DEMO-I10","2025-06-12T09:00:00Z","payment",15000],
+      ["DEMO-T12","DEMO-I10","2025-06-13T09:00:00Z","refund",15000]
+    ]
+  },
+  "store_backend": {
+    "columns": ["operation_id", "journey_id", "occurred_at", "operation"],
+    "rows": [
+      ["DEMO-S01","DEMO-J01","2025-06-02T09:30:00Z","cart_item_added"],
+      ["DEMO-S02","DEMO-J02","2025-06-03T09:30:00Z","cart_item_added"],
+      ["DEMO-S03","DEMO-J03","2025-06-04T09:30:00Z","direct_invoice_requested"],
+      ["DEMO-S04","DEMO-J04","2025-06-05T09:30:00Z","cart_item_added"],
+      ["DEMO-S05","DEMO-J05","2025-06-09T09:30:00Z","cart_item_added"],
+      ["DEMO-S06","DEMO-J06","2025-06-10T09:30:00Z","cart_item_added"],
+      ["DEMO-S07","DEMO-J06","2025-06-10T09:40:00Z","manager_requested"],
+      ["DEMO-S08","DEMO-J08","2025-06-11T09:30:00Z","cart_item_added"],
+      ["DEMO-S09","DEMO-J09","2025-06-10T10:30:00Z","direct_invoice_requested"],
+      ["DEMO-S10","DEMO-J10","2025-06-11T10:30:00Z","direct_invoice_requested"]
+    ]
+  },
+  "analytics_events": {
+    "columns": ["event_id", "operation_id", "event"],
+    "rows": [
+      ["DEMO-E01","DEMO-S01","add_to_cart"],
+      ["DEMO-E02","DEMO-S02","add_to_cart"],
+      ["DEMO-E03","DEMO-S04","add_to_cart"],
+      ["DEMO-E04","DEMO-S06","add_to_cart"],
+      ["DEMO-E05","DEMO-S06","add_to_cart"],
+      ["DEMO-E06","DEMO-S08","add_to_cart"]
+    ]
+  }
+}

@@ -2,3 +2,11 @@
 /.env.*
 !/.env.example
 /calculator*.xlsx
+
+# Local customer bundle and working notes for the hackathon
+/source/
+/research/store/
+/CONCEPT.md
+/MVP_PLAN.md
+__pycache__/
+*.sqlite3*
