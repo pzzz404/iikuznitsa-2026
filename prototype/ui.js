@@ -5,7 +5,7 @@ const dialog = document.querySelector("#evidence");
 const dialogBody = document.querySelector("#dialog-body");
 const nav = document.querySelector("nav");
 const state = {data: null, topic: "invoice", question: "", study: null, waiting: false, error: "", notice: ""};
-const pages = ["signals", "backlog", "checks", "sources", "usage"];
+const pages = ["funnel", "signals", "backlog", "checks", "sources", "usage"];
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char =>
   ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"}[char]));
 const number = value => new Intl.NumberFormat("ru-RU", {maximumFractionDigits: 1}).format(value);
@@ -38,7 +38,10 @@ async function refresh() {
 
 function route() {
   const [page, id] = location.hash.slice(1).split("/");
-  return [pages.includes(page) ? page : "signals", Number(id)];
+  const hasFunnel = state.data?.funnel;
+  const available = pages.includes(page) && (page !== "funnel" || hasFunnel) &&
+                    (page !== "signals" || !(state.data?.jury && hasFunnel));
+  return [available ? page : hasFunnel ? "funnel" : "signals", Number(id)];
 }
 
 function go(page, id) {
@@ -60,7 +63,7 @@ function sourceCard(fact) {
 }
 
 function openSource(id) {
-  const fact = allFacts().find(f => f.id === id);
+  const fact = currentStudy()?.evidence.find(f => f.id === id) || allFacts().find(f => f.id === id);
   if (!fact) return;
   dialogBody.innerHTML = `<h2>${esc(fact.title)}</h2><p class="by">${esc(fact.source)}${fact.version ? " · " + esc(fact.version) : ""}${fact.date ? " · " + prettyDate(fact.date) : ""}</p>
     <blockquote>${esc(fact.text)}</blockquote>
@@ -139,6 +142,7 @@ function backlog(id) {
     <p class="eyebrow">${taskLabel(id)} · ${esc(state.data.tag)}</p>
     <h1>${esc(task.title)}</h1><p class="lede">${esc(task.study_data.question)}</p>
     <section class="panel"><h2>Критерий приёмки</h2><p>${esc(task.criterion)}</p>
+      ${task.study_data.topic === "funnel" ? shownRelated(task.study_data) : ""}
       <div class="row actions">${button("Открыть связанную проверку", "check", id, "primary")}</div>
       ${messages()}</section>
     <section class="context"><h2>Свидетельства в задаче</h2><div class="grid">${task.study_data.evidence.map(sourceCard).join("")}</div></section>
@@ -172,6 +176,7 @@ function checkResult(task) {
 
 function checks(id) {
   const task = state.data.tasks.find(t => t.id === id);
+  if (task?.study_data.topic === "funnel") return eventCheck(task);
   if (!task) return `<div class="wide"><h1>Проверки</h1><p class="lede">Планы и решения после релиза по задачам бэклога.</p><section class="panel">
     ${state.data.tasks.map(t => button(taskLabel(t.id) + " · " + t.title, "check", t.id, "block-row")).join("") ||
     '<p>Сначала сохраните задачу из разбора.</p>'}</section></div>`;
@@ -255,11 +260,14 @@ function render() {
   document.querySelector("#task-count").textContent = state.data.tasks.length;
   for (const item of nav.querySelectorAll("button")) {
     const active = item.dataset.page === page;
+    item.hidden = (item.dataset.page === "funnel" && !state.data.funnel) ||
+                  (item.dataset.page === "signals" && Boolean(state.data.jury && state.data.funnel));
     item.classList.toggle("active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   }
-  app.innerHTML = {signals, backlog, checks, sources, usage: usagePage}[page](id);
+  app.innerHTML = {funnel: showFunnel, signals, backlog, checks, sources, usage: usagePage}[page](id);
+  if (page === "funnel" && !funnelView.report && !state.error) void loadFunnel();
   if (page === "usage" && !state.loadingJournal && !state.journal) {
     state.loadingJournal = true;
     api("usage").then(journal => { state.journal = journal; render(); })
@@ -301,6 +309,19 @@ document.addEventListener("click", async event => {
   if (d.task) go("backlog", d.task);
   if (d.check) go("checks", d.check);
   if (d.fact) openSource(d.fact);
+  if (d.funnelStage) {
+    Object.assign(funnelView, {stage: d.funnelStage, study: null});
+    state.error = "";
+    render();
+  }
+  if (d.funnelStudy !== undefined) void runFunnelStudy();
+  if (d.related) {
+    const item = currentStudy()?.related;
+    if (item?.id === d.related) {
+      dialogBody.innerHTML = `<h2>${esc(item.id)} · ${esc(item.title)}</h2><p>${esc(item.status)}</p><p class="by">Softline v17 · Бэклог_задачи</p>`;
+      dialog.showModal();
+    }
+  }
   if (d.topic && !state.waiting) {
     Object.assign(state, {topic: d.topic, question: state.data.topics[d.topic].question, study: null, error: "", notice: ""});
     render();
@@ -314,6 +335,10 @@ document.addEventListener("click", async event => {
       status.textContent = m.configured ? `${number(m.visits)} визитов · ${m.from} — ${m.to}` : m.message;
     } catch (error) { status.textContent = error.message; }
   }
+});
+
+app.addEventListener("change", event => {
+  if (event.target.matches("#funnel-filters select")) changeFunnelFilter(event.target.name, event.target.value);
 });
 
 app.addEventListener("submit", async event => {
@@ -331,9 +356,9 @@ app.addEventListener("submit", async event => {
       render();
       state.study = await api("study", {question: fields.question, topic: fields.question === defaultQuestion ? state.topic : null});
       state.topic = state.study.topic;
-    } else if (form.id === "create-task" || form.id === "edit-task") {
+    } else if (form.id === "create-task" || form.id === "funnel-task" || form.id === "edit-task") {
       const edit = form.id === "edit-task";
-      const studyId = edit ? state.data.tasks.find(t => t.id === id).study : state.study.id;
+      const studyId = edit ? state.data.tasks.find(t => t.id === id).study : currentStudy()?.id || state.study.id;
       const task = await api("task", {...fields, study:studyId, edit});
       await refresh();
       go("backlog", task.id);
@@ -343,6 +368,10 @@ app.addEventListener("submit", async event => {
       const response = await api("check", {...fields, id, sample:fields.sample === "on"});
       Object.assign(state.data.tasks.find(t => t.id === id), response);
       state.notice = "Параметры сохранены. Результат пересчитан.";
+    } else if (form.id === "event-check-form") {
+      const response = await api("check", {...fields, id});
+      Object.assign(state.data.tasks.find(t => t.id === id), response);
+      state.notice = "Результат проверки сохранён.";
     } else if (form.id === "research-form" || form.id === "research-bulk") {
       const items = form.id === "research-form" ? [fields] : JSON.parse(await fields.file.text());
       const result = await api("research", {items});
@@ -370,7 +399,7 @@ app.addEventListener("submit", async event => {
     if (form.id === "question-form") state.waiting = false;
   }
   render();
-  if (form.id === "check-form") document.querySelector("#result")?.scrollIntoView({block:"nearest"});
+  if (["check-form", "event-check-form"].includes(form.id)) document.querySelector("#result")?.scrollIntoView({block:"nearest"});
   if (form.id === "create-task" && page === "signals") window.scrollTo(0, 0);
 });
 

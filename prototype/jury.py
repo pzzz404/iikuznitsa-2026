@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from evidence import facts_and_tasks
+from funnel import jury_aggregates, load_history
 
 PARAPHRASES = {
     "F3": "В одном интервью покупатель запросил онлайн-сверку, историю покупок и возможность распечатать счёт.",
@@ -71,6 +72,8 @@ def main():
     sample.add_argument("output", type=Path)
     fake = sub.add_parser("synthetic")
     fake.add_argument("output", type=Path)
+    radar = sub.add_parser("funnel")
+    radar.add_argument("output", type=Path)
     issue = sub.add_parser("issue")
     issue.add_argument("registry", type=Path)
     issue.add_argument("origin")
@@ -85,6 +88,12 @@ def main():
         return
     if args.command == "synthetic":
         synthetic(args.output)
+        return
+    if args.command == "funnel":
+        data = jury_aggregates(load_history())
+        tasks = [{"task_id": data["task"]["id"], "title": data["task"]["title"], "status": data["task"]["status"]}]
+        write_private(args.output, json.dumps({"mode": "jury-funnel", "facts": [], "tasks": tasks, "funnel": data},
+                                             ensure_ascii=False, indent=2))
         return
     registry = read_json(args.registry)
     if args.command == "issue":

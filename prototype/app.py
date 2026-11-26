@@ -13,9 +13,10 @@ from pathlib import Path
 from urllib import parse, request
 
 import openrouter
+import funnel
 from evidence import ROOT, TOPICS, facts_and_tasks
-from inference import DECISIONS, ModelBusy, study
-from workflow import (experiment, import_research, now, save_check, setup_workflow,
+from inference import DECISIONS, ModelBusy, study, study_funnel
+from workflow import (EVENT_RESULTS, event_defaults, experiment, import_research, now, save_check, save_event_check, setup_workflow,
                       usage_for, usage_sum, verification_defaults)
 
 sys.path.insert(0, str(ROOT))
@@ -50,7 +51,7 @@ def connect():
 
 
 def setup():
-    global FACTS, IMPORTED, CRM
+    global FACTS, IMPORTED, CRM, FUNNEL
     if openrouter.ENABLED and (INVITES or not EVIDENCE_FILE or not os.getenv("PM_DATA_DIR")
                                or LOCAL.resolve() == (Path.home() / ".local/share/pm-hackathon").resolve()):
         raise RuntimeError("Для OpenRouter нужен отдельный локальный стенд с синтетическими данными")
@@ -62,8 +63,12 @@ def setup():
         if openrouter.ENABLED and sample.get("mode") != "synthetic-openrouter":
             raise RuntimeError("OpenRouter принимает только синтетический набор")
         FACTS, IMPORTED = sample["facts"], sample["tasks"]
+        FUNNEL = sample.get("funnel")
+        if INVITES and FUNNEL and FUNNEL.get("jury") is not True:
+            raise RuntimeError("Для жюри нужен отдельный файл согласованных агрегатов")
     else:
         FACTS, IMPORTED = facts_and_tasks()
+        FUNNEL = funnel.load_history()
     CRM = cohort_balances(json.loads((ROOT / "demo/crm/synthetic_sales.json").read_text()))
     LOCAL.mkdir(parents=True, exist_ok=True, mode=0o700)
     with connect() as db:
@@ -87,9 +92,15 @@ def task_details(db, row):
     task["calls"] = usage_for(db, task["study"])
     task["usage"] = usage_sum(task["calls"])
     stored = db.execute("SELECT payload FROM checks WHERE task=?", (task["id"],)).fetchone()
-    task["plan"] = json.loads(stored[0]) if stored else verification_defaults(TOPICS[record["topic"]]["measure"])
-    task["result"] = experiment(task["plan"])
+    is_funnel = record["topic"] == "funnel"
+    defaults = event_defaults() if is_funnel else verification_defaults(TOPICS[record["topic"]]["measure"])
+    task["plan"] = json.loads(stored[0]) if stored else defaults
+    task["result"] = None if is_funnel else experiment(task["plan"])
     return task
+
+
+def accessible_study(payload):
+    return bool(payload and (not (INVITES and FUNNEL) or json.loads(payload[0])["topic"] == "funnel"))
 
 
 def save_task(db, payload):
@@ -98,7 +109,7 @@ def save_task(db, payload):
     criterion = payload.get("criterion", "").strip()
     if not (0 < len(title) <= 180 and 0 < len(criterion) <= 1200):
         raise ValueError("Заполните название и критерий приёмки")
-    if not db.execute("SELECT 1 FROM studies WHERE id=?", (key,)).fetchone():
+    if not accessible_study(db.execute("SELECT payload FROM studies WHERE id=?", (key,)).fetchone()):
         raise ValueError("Сначала завершите разбор")
     if payload.get("edit") is True:
         db.execute("UPDATE tasks SET title=?,criterion=? WHERE study=?", (title, criterion, key))
@@ -184,9 +195,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply({"error": "Откройте ссылку-приглашение для жюри."}, status=401)
 
     def do_GET(self):
-        path = parse.urlsplit(self.path).path
+        target = parse.urlsplit(self.path)
+        path = target.path
         static = {"/": ("index.html", "text/html"), "/style.css": ("style.css", "text/css"),
-                  "/ui.js": ("ui.js", "application/javascript")}
+                  "/ui.js": ("ui.js", "application/javascript"), "/funnel-ui.js": ("funnel-ui.js", "application/javascript")}
         if path in static:
             name, kind = static[path]
             return self.reply((HERE / name).read_bytes(), kind + "; charset=utf-8")
@@ -201,21 +213,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/data":
             with connect() as db:
                 tasks = [task_details(db, row) for row in db.execute(
-                    "SELECT t.*,s.payload FROM tasks t JOIN studies s ON t.study=s.id ORDER BY t.id DESC"
+                    """SELECT t.*,s.payload FROM tasks t JOIN studies s ON t.study=s.id
+                    WHERE NOT ? OR json_extract(s.payload, '$.topic')='funnel' ORDER BY t.id DESC""",
+                    (bool(INVITES and FUNNEL),)
                 )]
                 research = [] if INVITES else uploaded(db)
-                deferred = [dict(row) for row in db.execute("SELECT * FROM deferred WHERE until_date>=?",
-                                                              (date.today().isoformat(),))]
+                deferred = [] if INVITES and FUNNEL else [
+                    dict(row) for row in db.execute("SELECT * FROM deferred WHERE until_date>=?", (date.today().isoformat(),))]
                 return self.reply({"topics": TOPICS, "decisions": DECISIONS, "facts": FACTS,
                                    "research": research, "tasks": tasks, "tag": TAG, "deferred": deferred,
                                    "imported": [{"id": r["task_id"], "title": r["title"], "status": r["status"]}
                                                 for r in IMPORTED],
                                    "crm": CRM, "sample": bool(EVIDENCE_FILE), "jury": bool(INVITES),
-                                   "external": openrouter.ENABLED,
+                                   "external": openrouter.ENABLED, "funnel": funnel.options(FUNNEL),
+                                   "event_results": EVENT_RESULTS,
                                    "today": date.today().isoformat()})
+        if path == "/api/funnel" and FUNNEL:
+            try:
+                params = dict(parse.parse_qsl(target.query, max_num_fields=12))
+                return self.reply(funnel.report(FUNNEL, params))
+            except ValueError as exc:
+                return self.reply({"error": str(exc)}, status=400)
         if path == "/api/usage":
             with connect() as db:
-                calls = [dict(row) for row in db.execute("SELECT * FROM calls ORDER BY id DESC LIMIT 200")]
+                calls = [dict(row) for row in db.execute(
+                    "SELECT * FROM calls WHERE NOT ? OR scenario LIKE 'Воронка · %' ORDER BY id DESC LIMIT 200",
+                    (bool(INVITES and FUNNEL),))]
                 return self.reply({"calls": calls, "usage": usage_sum(calls)})
         if path == "/api/metrika":
             try:
@@ -254,6 +277,8 @@ class Handler(BaseHTTPRequestHandler):
                 cookie[COOKIE]["max-age"] = ttl
                 return self.reply({"ok": True}, cookie=cookie[COOKIE].OutputString())
             if path == "/api/study":
+                if INVITES and FUNNEL:
+                    raise ValueError("Выберите этап воронки в демонстрационном наборе")
                 q = " ".join(data.get("question", "").split())
                 if not 3 <= len(q) <= 350:
                     raise ValueError("Введите вопрос длиной от 3 до 350 символов")
@@ -262,16 +287,21 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     research = [] if INVITES else uploaded(db)
                 return self.reply(study(q, data.get("topic"), FACTS, TOPICS, research, connect, LIMIT))
+            if path == "/api/funnel/study" and FUNNEL:
+                return self.reply(study_funnel(funnel.study_case(FUNNEL, data), connect, LIMIT))
             with connect() as db:
                 if path == "/api/task":
                     response = save_task(db, data)
                 elif path == "/api/check":
                     task_id = data.get("id")
-                    if not db.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+                    existing = db.execute("SELECT s.payload FROM tasks t JOIN studies s ON t.study=s.id WHERE t.id=?",
+                                          (task_id,)).fetchone()
+                    if not accessible_study(existing):
                         raise ValueError("Задача не найдена")
-                    plan = save_check(db, task_id, data)
-                    response = {"plan": plan, "result": experiment(plan)}
-                elif path == "/api/defer":
+                    is_funnel = json.loads(existing[0])["topic"] == "funnel"
+                    plan = save_event_check(db, task_id, data) if is_funnel else save_check(db, task_id, data)
+                    response = {"plan": plan, "result": None if is_funnel else experiment(plan)}
+                elif path == "/api/defer" and not (INVITES and FUNNEL):
                     topic, until, reason = data.get("topic"), data.get("date"), data.get("reason", "").strip()
                     if topic not in TOPICS or not 1 <= len(reason) <= 240:
                         raise ValueError("Выберите сигнал и укажите причину")

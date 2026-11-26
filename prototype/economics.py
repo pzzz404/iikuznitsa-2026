@@ -25,17 +25,18 @@ def add_journal(book, local, external):
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(wrap_text=True)
     sheet.freeze_panes = "A2"
-    for environment, logs in (("Локальный ваншот", local), ("OpenRouter", external)):
+    for is_external, logs in ((False, local), (True, external)):
         if not logs:
             continue
+        environment = "OpenRouter" if is_external else logs.get("label", "Локальный ваншот")
         task = logs["task"]
         for call in reversed(logs["journal"]["calls"]):
-            cost = call.get("actual_cost") if environment == "OpenRouter" else "0"
+            cost = call.get("actual_cost") if is_external else "0"
             sheet.append([environment, call["scenario"], f"PM-{task['id']:03d}" if call["study"] == task["study"] else None,
                           call["id"], call["model"], call["prompt_tokens"], call["completion_tokens"], call["cached_tokens"],
                           call["elapsed_ms"], float(cost) if cost is not None else None,
-                          "USD" if environment == "OpenRouter" else "RUB",
-                          call.get("receipt") if environment == "OpenRouter" else "usage llama.cpp; тариф 0",
+                          "USD" if is_external else "RUB",
+                          call.get("receipt") if is_external else "usage llama.cpp; тариф 0",
                           call["status"], call.get("generation")])
             sheet["J"+str(sheet.max_row)].number_format = "0.000000000"
     sheet.auto_filter.ref = sheet.dimensions
@@ -79,7 +80,7 @@ def fill(original, output, local, external, rate):
         cell.value = value
     sheet["A17"] = "Вход и выход по фактическому usage. В журнале одна строка на каждый вызов."
     sheet["A18"] = "Локально: Beelink, CPU, llama.cpp. Мощность, тариф и амортизация не замерены."
-    sheet["A19"] = "Токены разработки Codex вне расчёта. Второй вопрос в ролике не создаёт задачу."
+    sheet["A19"] = local.get("comment", "Токены разработки Codex вне расчёта. Второй вопрос в ролике не создаёт задачу.")
     caches = {}
     if external:
         if any(c.get("actual_cost") is None or not c.get("receipt") or c.get("currency") != "USD" for c in calls):
