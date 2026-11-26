@@ -10,3 +10,4 @@
 /MVP_PLAN.md
 __pycache__/
 *.sqlite3*
+/video/*
