@@ -1,6 +1,6 @@
 "use strict";
 
-const funnelView = {report: null, filter: null, stage: "order", loading: false, waiting: false};
+const funnelView = {report:null,filter:null,stage:"all",product:"all",filtersOpen:false,loading:false,waiting:false};
 const funnelStages = {
   license: "Выбор лицензии", cart: "Корзина", order: "Самостоятельный заказ", paid: "Оплата",
 };
@@ -32,33 +32,62 @@ async function loadFunnel() {
 
 function changeFunnelFilter(key, value) {
   if (funnelView.loading || funnelView.waiting) return;
-  funnelView.filter[key] = value;
+  const previous = overviewRef();
+  if (key === "product") {
+    funnelView.product = value;
+    if (state.data.funnel.families[value]) funnelView.filter.family = value;
+  } else {
+    funnelView.filter[key] = value;
+  }
   const f = funnelView.filter;
-  if (key === "before" && (value === "oct12") !== (f.after === "oct19")) f.after = value === "oct12" ? "oct19" : "oct";
-  if (key === "after" && (value === "oct19") !== (f.before === "oct12")) f.before = value === "oct19" ? "oct12" : "aug";
-  rememberFunnelView();
+  if (key === "before" || key === "after") {
+    const other = key === "before" ? "after" : "before";
+    const {windows,defaults} = state.data.funnel;
+    if (windows[value].mate) f[other] = windows[value].mate;
+    else if (windows[f[other]].mate) f[other] = defaults[other];
+  }
+  rememberFunnelView(previous);
   funnelView.report = null;
   state.error = "";
   void loadFunnel();
   render();
 }
 
-function rememberFunnelView() {
-  if (state.data.store) history.replaceState(null,"","#funnel/"+deviationRef(funnelView.filter)+"~"+funnelView.stage);
+function overviewRef(filter = funnelView.filter || state.data.funnel.defaults) {
+  return deviationRef(filter)+"~"+funnelView.stage+"~"+funnelView.product;
+}
+
+function overviewBack(filter) {
+  return hashParams().get("from") || overviewRef(filter);
+}
+
+function rememberFunnelView(previous) {
+  if (!state.data.store) return;
+  const next = overviewRef();
+  if (previous === next) return;
+  if (!location.hash.startsWith("#funnel/")) history.replaceState(null,"","#funnel/"+previous);
+  history.pushState(null,"","#funnel/"+next);
 }
 
 function restoreFunnelView(ref) {
-  if (!ref || !state.data.store) return;
-  const [raw,stage] = ref.split("~");
-  const choice=deviationArgs(raw);
+  if (!state.data.store) return;
   const model=state.data.funnel;
+  const [raw,stage,product] = (ref || deviationRef(model.defaults)).split("~");
+  const choice=deviationArgs(raw);
   if (!Object.hasOwn(model.families,choice.family) || !model.windows[choice.before] || !model.windows[choice.after] ||
       !model.devices[choice.device] || !model.audiences[choice.audience]) return;
-  if (funnelStages[stage]) funnelView.stage=stage;
+  funnelView.stage = Object.hasOwn(funnelStages,stage) ? stage : "all";
+  funnelView.product = Object.hasOwn(state.data.store.catalog,product) ? product : "all";
   if (deviationRef(funnelView.filter || model.defaults) !== raw) {
     funnelView.filter=choice;
     funnelView.report=null;
   }
+}
+
+function periodOptions(model, slot, filters) {
+  return Object.fromEntries(Object.entries(model.windows).filter(([id,item])=>item.slot===slot &&
+    (!item.partial || filters.after===id))
+    .map(([id,item])=>[id,item.label+" · "+(item.weeks===1?"1 неделя":item.weeks+" недель")]));
 }
 
 function ratio(pair) {
@@ -134,6 +163,10 @@ function stageSummary(r, chosen, comparator, other, status, gate) {
   const step = r.steps.after[0];
   const reach = r.pairs.after?.cfg_reach_rate;
   const model = state.data.funnel;
+  const astraCompare = state.data.store && model.windows[r.filter.before].mate
+    ? button("Разобрать выбранные недели", "astra", astraRef("comparison",r.filter.before,r.filter.after))
+    : button(state.data.store?"Октябрьский пример · 12–25 октября":"Где меняется прохождение?",
+      "page","astra","secondary");
   const defaultAction = label => `<button type="button" data-funnel-study class="primary" ${gate ? "disabled" : ""}>${label}</button>`;
   if (stage === "order" && chosen) {
     const direction = chosen.change < 0 ? "↓" : chosen.change > 0 ? "↑" : "·";
@@ -153,7 +186,7 @@ function stageSummary(r, chosen, comparator, other, status, gate) {
       note:r.filter.family==="kes" ? "У Kaspersky фильтры без последовательных шагов. Сравнение использования до запуска недоступно." :
         "Проверить вход в подбор и переходы отдельно.", action:`<div class="row">
           ${r.filter.family==="kes" ? defaultAction("Проверить использование фильтров") : ""}
-          ${r.filter.family==="astra" ? button("Где меняется прохождение?", "page", "astra", "secondary") : ""}</div>`},
+          ${r.filter.family==="astra" ? astraCompare : ""}</div>`},
     cart: {title:"Добавляли ли товар в корзину?", text:pair ? `Визиты с добавлением / визиты с открытием · ${cellRatio(pair)}` : r.cart_gap,
       note:r.filter.family==="kes" ? "Связанная T-08 касается передачи событий. Первый шаг — сверить действие и запись." :
         "Доля относится к открытиям конфигуратора в доступных строках.", action:defaultAction("Сверить события корзины")},
@@ -180,13 +213,11 @@ function optionDetail(r) {
 }
 
 function showFunnel() {
+  if (state.data.store) return showOverview();
+  if (funnelView.stage === "all") funnelView.stage = "order";
   const model = state.data.funnel;
   const r = funnelView.report;
   const f = funnelView.filter || model.defaults;
-  const windows = Object.entries(model.windows);
-  const periodOptions = slot => Object.fromEntries(windows.filter(([id, item]) => item.slot === slot &&
-    (!item.partial || f.after==="oct_partial") && (f.after!=="oct_partial" || slot!=="after" || item.partial || id==="oct19")).map(([id, item]) =>
-    [id, `${item.label} · ${item.weeks === 1 ? "1 неделя" : item.weeks + " недель"}`]));
   const chosen = r?.orders[f.family];
   const other = f.family === "kes" ? "astra" : "kes";
   const comparator = r?.orders[other];
@@ -202,8 +233,8 @@ function showFunnel() {
     <h1>Воронка покупок</h1></div><p class="muted">${state.data.store ? esc(coverageCaption(state.data.store)) : "Приоритет разработки после релиза"}</p></div>`;
   const filter = `<form id="funnel-filters" class="funnel-filters panel" aria-label="Фильтры воронки">
     ${selectField("Товарное семейство", "family", model.families, f.family, lock)}
-    ${selectField("Первый период", "before", periodOptions("before"), f.before, lock)}
-    ${selectField("Второй период", "after", periodOptions("after"), f.after, lock)}
+    ${selectField("Первый период", "before", periodOptions(model,"before",f), f.before, lock)}
+    ${selectField("Второй период", "after", periodOptions(model,"after",f), f.after, lock)}
     ${selectField("Устройство", "device", model.devices, f.device, lock)}
     ${selectField("Покупатели", "audience", model.audiences, f.audience, lock)}
     ${state.data.store && f.after!=="oct19" ? `<label class="toggle"><input name="full_weeks" type="checkbox" ${f.after==="oct_partial"?"":"checked"} ${lock}>Только полные недели</label>` : ""}
@@ -231,7 +262,6 @@ function showFunnel() {
     ${stageSummary(r, chosen, comparator, other, status, gate)}
     ${messages()}
     ${funnelView.stage === "order" ? ordersDetail(r) : ""}
-    ${state.data.store && funnelView.stage==="order" && f.family==="astra" && !unavailable && f.device==="all" ? astraAlert() : ""}
     ${!unavailable && funnelView.stage !== "order" ? measuredDetails(r) : ""}
     <section class="panel radar-coverage"><div><h2>Покрытие магазина</h2>
       <p>Индексы заказов только у Kaspersky и Astra. В других ветках есть материалы по товарам.</p></div>

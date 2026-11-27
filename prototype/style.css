@@ -58,11 +58,41 @@
 .radar-weekly div { display: grid; gap: 2px; }
 .radar-weekly meter { width: 100%; }
 #radar-count:not(:empty) { padding: 1px 6px; border-radius: 9px; background: var(--accent-light); color: var(--accent); }
-#radar-notice { position: fixed; right: 22px; bottom: 20px; z-index: 2; max-width: min(410px, calc(100% - 44px));
-  padding: 13px 17px; background: var(--panel); border: 1px solid var(--line);
-  border-left: 3px solid var(--accent); box-shadow: 0 6px 24px #21242421; border-radius: var(--radius); }
-#radar-notice p { color: var(--muted); }
-#radar-notice button { margin-top: 2px; }
+#radar-notice:not([hidden]) { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  max-width: 1280px; width: calc(100% - 80px); margin: 12px auto 0; padding: 8px 14px;
+  border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel); }
+#radar-notice p { color: var(--muted); margin: 0; }
+.store-overview { max-width: 1280px; margin: 0 auto; }
+.overview-head h1 { margin: 0 0 5px; }
+.overview-head p { margin: 0; }
+.overview-head .by { display: inline; margin-left: 9px; }
+.overview-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 22px; margin-top: 15px; }
+.overview-toolbar > label { max-width: min(360px, 100%); }
+.overview-toolbar > details { margin: 0; }
+.overview-toolbar > details[open] { flex: 1 1 100%; }
+.overview-toolbar .funnel-filters { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.overview-stages { margin: 15px 0 0; }
+.overview-stages button { min-height: 82px; padding: 12px 14px; }
+.overview-stages li + li::before { top: 28px; }
+.overview-stages button[aria-pressed="true"] { outline: 2px solid #526b84; outline-offset: -2px; border-color: #526b84; background: #eef3f8; }
+.stage-selected { color: #334c67; font-size: 13px; font-weight: 650; }
+.overview-findings { margin-top: 18px; }
+.overview-row { display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 12px 16px; margin: 8px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.overview-row.down { border-left: 3px solid var(--accent); }
+.overview-product { color: var(--muted); font-weight: 650; margin: 0; }
+.overview-row h3 { margin: 1px 0 3px; font-size: 18px; }
+.overview-row .by { margin: 0; }
+.overview-row button { flex-shrink: 0; }
+.overview-more { margin: 14px 0; }
+.astra-diagnostic td .by { display: block; }
+.astra-diagnostic td .link { display: block; margin-top: 3px; }
+@media(max-width: 800px) {
+  #radar-notice:not([hidden]) { width: calc(100% - 28px); flex-wrap: wrap; }
+  .overview-head .by { display: block; margin-left: 0; }
+  .overview-toolbar .funnel-filters { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .overview-row { align-items: flex-start; flex-direction: column; }
+}
 @media(max-width: 680px) {
   .radar-signal, .radar-coverage { align-items: flex-start; flex-direction: column; gap: 10px; }
   .radar-signal button { white-space: normal; }

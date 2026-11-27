@@ -18,7 +18,7 @@ import radar
 import growth_research
 import mail_outbox
 from handoff import redmine_csv
-from store_history import sales_basis
+from store_history import astra_alert, astra_diagnostic, sales_basis
 from evidence import ROOT, TOPICS, facts_and_tasks
 from inference import DECISIONS, ModelBusy, study, study_funnel
 from workflow import (EVENT_RESULTS, event_defaults, experiment, import_research, now, save_check, save_event_check, setup_workflow,
@@ -298,10 +298,14 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     if STORE and path == "/api/radar/office":
                         return self.reply({"run":radar.project_run(db,"office",{},args.get("run"))})
+                    if STORE and path == "/api/radar/astra":
+                        return self.reply(astra_diagnostic(STORE,args))
                     if STORE and path == "/api/radar/orders":
                         params = funnel.selection(args)
                         windows = [funnel.WINDOWS[params[k]] for k in ("before","after")]
                         return self.reply({"series":STORE["sales"][params["family"]],
+                                           "astraAlert":astra_alert(STORE,params["before"],params["after"]),
+                                           "kesRun":radar.project_run(db,"kes",{**params,"family":"kes"},summary=True),
                                            "evidence":[sales_basis(STORE,key,windows) for key in funnel.FAMILIES]})
                     if path == "/api/radar/runs":
                         return self.reply(radar.recent(db))

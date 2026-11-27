@@ -17,8 +17,10 @@ WINDOWS = {
     "aug": {"start": "2026-08-17", "weeks": 6, "label": "17.08–27.09", "slot": "before"},
     "oct": {"start": "2026-10-05", "weeks": 6, "label": "05.10–15.11", "slot": "after"},
     "oct_partial": {"start": "2026-10-05", "weeks": 7, "label": "05.10–22.11", "slot": "after", "partial": True},
-    "oct12": {"start": "2026-10-12", "weeks": 1, "label": "12–18.10", "slot": "before"},
-    "oct19": {"start": "2026-10-19", "weeks": 1, "label": "19–25.10", "slot": "after"},
+    "oct12": {"start": "2026-10-12", "weeks": 1, "label": "12–18.10", "slot": "before", "mate": "oct19"},
+    "oct19": {"start": "2026-10-19", "weeks": 1, "label": "19–25.10", "slot": "after", "mate": "oct12"},
+    "nov02": {"start": "2026-11-02", "weeks": 1, "label": "02–08.11", "slot": "before", "mate": "nov09"},
+    "nov09": {"start": "2026-11-09", "weeks": 1, "label": "09–15.11", "slot": "after", "mate": "nov02"},
 }
 DEFAULTS = {"family": "kes", "before": "aug", "after": "oct", "device": "all", "audience": "all"}
 DEVICES = {"all": "Все устройства", "desktop": "Компьютер", "mobile": "Телефон", "tablet": "Планшет"}
@@ -46,6 +48,11 @@ PAIRS = {"cfg_add_to_cart_rate": ("add_to_cart", "open"),
 def weeks(window):
     first = date.fromisoformat(window["start"])
     return [(first + timedelta(weeks=i)).isoformat() for i in range(window["weeks"])]
+
+
+def days_in(window):
+    start = date.fromisoformat(window["start"])
+    return [(start + timedelta(days=i)).isoformat() for i in range(7 * window["weeks"])]
 
 
 def load_history():
@@ -80,8 +87,7 @@ def load_history():
                 if len(index) == len(dates):
                     orders[family][key] = mean(index)
                     series[family][key] = [{"date": day, "value": value} for day, value in zip(dates,index,strict=True)]
-                start = date.fromisoformat(window["start"])
-                days = [(start + timedelta(days=i)).isoformat() for i in range(7 * len(dates))]
+                days = days_in(window)
                 visits[family][key] = {d: value for d in DEVICES if d != "all"
                                        and (value := family_visits(metrics, product, days, d))}
                 ratios[family][key] = {
@@ -164,8 +170,10 @@ def selection(args):
         if not isinstance(values[key], str) or values[key] not in choices:
             raise ValueError("Проверьте параметры воронки")
     before, after = WINDOWS[values["before"]], WINDOWS[values["after"]]
-    if before["slot"] != "before" or after["slot"] != "after" or ((values["before"] == "oct12") != (values["after"] == "oct19")):
-        raise ValueError("Выберите два окна вокруг релиза или две октябрьские недели.")
+    if (before["slot"] != "before" or after["slot"] != "after"
+            or (before.get("mate") and before["mate"] != values["after"])
+            or (after.get("mate") and after["mate"] != values["before"])):
+        raise ValueError("Выберите два окна вокруг релиза или соседние недели из одной пары.")
     return values
 
 

@@ -39,7 +39,7 @@ async function refresh() {
 }
 
 function route() {
-  const [page, id] = location.hash.slice(1).split("/");
+  const [page, id] = location.hash.slice(1).split("?")[0].split("/");
   const hasFunnel = state.data?.funnel;
   if (page === "funnel" && hasFunnel) return [page,id];
   if (hasFunnel && radarPages.includes(page)) return [page, id];
@@ -48,8 +48,19 @@ function route() {
   return [available ? page : hasFunnel ? "funnel" : "signals", Number(id)];
 }
 
-function go(page, id) {
-  const hash = "#" + page + (id ? "/" + id : "");
+function hashParams() {
+  return new URLSearchParams(location.hash.split("?")[1] || "");
+}
+
+function overviewNavigation() {
+  if (!state.data.store) return {};
+  const from=route()[0]==="funnel" ? overviewRef() : hashParams().get("from");
+  return from ? {from} : {};
+}
+
+function go(page, id, params={}) {
+  const query = new URLSearchParams(params).toString();
+  const hash = "#" + page + (id ? "/" + id : "") + (query ? "?" + query : "");
   if (location.hash === hash) render();
   else location.hash = hash;
   window.scrollTo(0, 0);
@@ -292,6 +303,7 @@ function render() {
   if (!state.data) return;
   const [page, id] = route();
   if (page==="funnel") restoreFunnelView(id);
+  nav.querySelector('[data-page="funnel"]').textContent = state.data.store ? "Обзор магазина" : "Воронка";
   nav.hidden = false;
   document.querySelector("#task-count").textContent = state.data.tasks.length;
   for (const item of nav.querySelectorAll("button")) {
@@ -346,23 +358,30 @@ document.querySelector("#close-dialog").addEventListener("click", () => dialog.c
 document.addEventListener("click", async event => {
   const d = event.target.closest("button")?.dataset;
   if (!state.data || !d) return;
-  if (d.page) { state.journal = null; go(d.page); }
+  if (d.page) {
+    state.journal=null;
+    go(d.page, d.page==="funnel" && state.data.store ? overviewBack() : undefined);
+  }
   if (d.task) { if (dialog.open) dialog.close(); go("backlog", d.task); }
   if (d.check) go("checks", d.check);
   if (d.fact) openSource(d.fact);
-  if (d.deviation) go("deviation", d.deviation);
+  if (d.deviation) go("deviation",d.deviation,overviewNavigation());
+  if (d.astra) go("astra",d.astra,overviewNavigation());
+  if (d.officePrices) go("catalog",d.officePrices,{...overviewNavigation(),tab:"prices"});
   if (d.funnelBack) go("funnel",d.funnelBack);
   if (d.catalog) go("catalog", d.catalog);
   if (d.finding) go("growth", d.finding);
   if (d.findingDecision !== undefined) document.querySelector("#finding-decision")?.focus();
   if (d.run) void openRun(d.run);
+  if (d.radarDismiss) { radarView.dismissed.add(d.radarDismiss); renderRadarNotice(); }
   if (d.radarRetry) {
     try { await retryRadar(); }
     catch (error) { state.error = error.message; render(); }
   }
   if (d.funnelStage) {
-    funnelView.stage = d.funnelStage;
-    rememberFunnelView();
+    const previous=overviewRef();
+    funnelView.stage = state.data.store && funnelView.stage===d.funnelStage ? "all" : d.funnelStage;
+    rememberFunnelView(previous);
     state.error = "";
     render();
   }
@@ -403,8 +422,12 @@ document.addEventListener("click", async event => {
 
 app.addEventListener("change", event => {
   if (event.target.matches("#funnel-filters select")) changeFunnelFilter(event.target.name, event.target.value);
+  if (event.target.matches(".overview-toolbar select[name=product]")) changeFunnelFilter("product",event.target.value);
   if (event.target.matches("#funnel-filters [name=full_weeks]")) changeFunnelFilter("after",event.target.checked ? "oct" : "oct_partial");
 });
+app.addEventListener("toggle",event=>{
+  if (event.target.id==="overview-filters") funnelView.filtersOpen=event.target.open;
+},true);
 app.addEventListener("input", event => {
   if (event.target.id === "catalog-query") {
     state.catalogQuery = event.target.value;
@@ -426,7 +449,7 @@ app.addEventListener("submit", async event => {
     } else if (form.id === "radar-growth-form") {
       await startRadar({mode:"growth", question:fields.question || ""});
     } else if (form.id === "radar-astra-form") {
-      await startRadar({...detailForRoute().filter, mode:"stage", stage:"license"});
+      await startRadar({...detailForRoute().filter, mode:"stage", stage:form.dataset.stage || "license"});
     } else if (["radar-decision","radar-defer","radar-segment"].includes(form.id)) {
       const kind = submit.dataset.decision || form.id.split("-")[1];
       const resolution = await api("radar/resolve",{...fields,id:form.dataset.runId || id,kind});

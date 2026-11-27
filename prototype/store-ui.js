@@ -52,28 +52,183 @@ function chartSeries(series, events, filter) {
   </section>`;
 }
 
-function astraAlert() {
-  const store = state.data.store;
-  const pair = store?.alerts.astra.at(-1);
-  if (!pair) return "";
-  return `<section class="panel radar-signal down"><div><p class="label">Astra · предупреждение по порогу</p>
-    <h2>${pair[0].value} и ${pair[1].value} · две недели ниже ${store.threshold}</h2>
-    <p class="by">${pair.map(p=>prettyDate(p.date).slice(0,5)).join(" и ")} · индекс самостоятельных заказов · «Продажи», строки ${pair.map(p=>p.row).join(", ")}.</p>
-    ${sourceLink(store.definitions.family_orders_idx,"Открыть правило из справочника")}</div>
-    ${button("Разобрать путь Astra","page","astra","secondary")}</section>`;
+function astraRef(finding,before,after) {
+  return finding+"."+deviationRef({family:"astra",before,after,device:"desktop",audience:"all"});
+}
+
+function astraDateRange(first,last) {
+  const format=new Intl.DateTimeFormat("ru-RU",{day:"numeric",month:"long",timeZone:"UTC"});
+  return format.formatRange(new Date(first),new Date(Date.parse(last)+6*86400000));
+}
+
+function updateOverviewResearch() {
+  const report=funnelView.report;
+  if (!report?.storeData) return;
+  const ref=deviationRef({...report.filter,family:"kes"});
+  const matches=radarView.runs.filter(run=>run.finding==="kes" && deviationRef(run.filter)===ref);
+  const existing=report.storeData.kesRun;
+  const pool=existing && !matches.some(run=>run.id===existing.id) ? [...matches,existing] : matches;
+  const run=pool.sort((a,b)=>Number(b.status==="done")-Number(a.status==="done") ||
+    b.created.localeCompare(a.created))[0];
+  if (run && (run.id!==existing?.id || run.status!==existing.status || run.resolution?.kind!==existing.resolution?.kind)) {
+    report.storeData.kesRun=run;
+    render();
+  }
+}
+
+function overviewRows(report) {
+  const store=state.data.store;
+  const options=state.data.funnel.windows;
+  const {before,after}=report.filter;
+  const windows=[options[before],options[after]];
+  const dates=windows.map(w=>w.label).join(" и ");
+  const within=iso=>windows.some(w=>Date.parse(iso)>=Date.parse(w.start) &&
+    Date.parse(iso)<Date.parse(w.start)+w.weeks*604800000);
+  const rows=[];
+  const pair=report.storeData.astraAlert;
+  const first=pair && Object.keys(options).find(id=>options[id].start===pair[0].date &&
+    options[options[id].mate]?.start===pair[1].date);
+  const astra=report.orders.astra;
+  if (astra && first) {
+    const latest=options[first].mate;
+    const context=before===first && after===latest ? "" : ` · среднее индекса ${signed(astra.change)}% за окна ${dates}`;
+    rows.push({product:"astra",stage:"order",label:"Astra",signal:"Две недели ниже порога "+store.threshold,
+      scope:`${pair[0].value} → ${pair[1].value} · ${options[first].label} и ${options[latest].label}${context}`,
+      className:"down",cta:button("Разобрать "+astraDateRange(pair[0].date,pair[1].date),"astra",astraRef("below90",first,latest),"primary")});
+  } else if (astra && options[before].mate) {
+    rows.push({product:"astra",stage:"order",label:"Astra",signal:"Индекс самостоятельных заказов "+signed(astra.change)+"%",
+      scope:dates+" · "+number(astra.before)+" → "+number(astra.after),
+      className:astra.change<0?"down":"",cta:button("Разобрать выбранные недели","astra",astraRef("comparison",before,after),"secondary")});
+  }
+  const kes=report.orders.kes;
+  if (kes) {
+    const filters={...report.filter,family:"kes"};
+    const run=report.storeData.kesRun;
+    const done=run?.status==="done";
+    const action=done ? (run.resolution ? "Открыть решение по T-08" : "Открыть вывод по T-08") :
+      run && ["queued","running"].includes(run.status) ? "Открыть ход исследования" : "Открыть отклонение";
+    const progress=done ? (run.resolution ? "Решение сохранено" : "Вывод готов к решению") :
+      run ? radarStates[run.status] : "Исследование не запускалось для этого периода";
+    rows.push({product:"kes",stage:"order",label:"Kaspersky",signal:"Индекс самостоятельных заказов "+signed(kes.change)+"%",
+      scope:dates+" · "+progress,className:kes.change<0?"down":"",
+      cta:button(action,"deviation",deviationRef(filters)+(run?"~"+run.id:""),"secondary")});
+  }
+  const office=store.catalog.office;
+  const measured=office.prices.matched[0]?.date;
+  if (measured && within(measured)) {
+    rows.push({product:"office",stage:"license",label:office.title,
+      signal:`${office.prices.below_store} из ${office.prices.matched.length} сопоставимых предложений дешевле Store`,
+      scope:"Замер "+new Intl.DateTimeFormat("ru-RU",{day:"numeric",month:"long",timeZone:"UTC"}).format(new Date(measured)),
+      className:"down",cta:button("Сверить цены","office-prices","office","secondary")});
+  }
+  return rows;
+}
+
+function showOverview() {
+  const model=state.data.funnel, store=state.data.store, report=funnelView.report;
+  const f=funnelView.filter || model.defaults;
+  const {stage,product}=funnelView;
+  const dates=[f.before,f.after].map(key=>model.windows[key].label).join(" и ");
+  const locked=funnelView.loading || funnelView.waiting ? "disabled" : "";
+  const products={all:"Все товары",...Object.fromEntries(Object.entries(store.catalog).map(([key,row])=>[key,row.title]))};
+  const headings={license:["Выбор предложения и лицензии",product==="all"?"Цены Office и данные подбора":
+      product==="office"?"Сопоставимые предложения":"Материалы по выбранному товару"],
+    cart:["Корзина",product==="kes"?"Пробел учёта Kaspersky":product==="all" || product==="astra"?"Счётчики добавления по Astra":"Нет счётчиков для товара"],
+    order:["Самостоятельный заказ",product==="all"?"Kaspersky и Astra":
+      model.families[product] || "Нет ряда по выбранному товару"],
+    paid:["Оплата","Нет связки с оплатой"]};
+  const controls=`<div class="overview-toolbar">
+      ${selectField("Товар","product",products,product,locked)}
+      <details id="overview-filters" ${funnelView.filtersOpen?"open":""}><summary>Сравнить периоды и разрезы</summary>
+        <form id="funnel-filters" class="funnel-filters panel" aria-label="Периоды и разрезы">
+          ${selectField("Первый период","before",periodOptions(model,"before",f),f.before,locked)}
+          ${selectField("Второй период","after",periodOptions(model,"after",f),f.after,locked)}
+          ${selectField("Устройство","device",model.devices,f.device,locked)}
+          ${selectField("Покупатели","audience",model.audiences,f.audience,locked)}
+          ${!model.windows[f.after].mate ? `<label class="toggle"><input name="full_weeks" type="checkbox"
+            ${f.after==="oct_partial"?"":"checked"} ${locked}>Только полные недели</label>` : ""}
+        </form>
+      </details></div>`;
+  const title=`<div class="overview-head"><h1>Обзор магазина</h1>
+    <p><strong>${esc(dates)}</strong>${model.windows[f.after].partial ? " · включает неполную неделю" : ""}
+       <span class="by">${esc(coverageCaption(store))} · индекс заказов по двум семействам</span></p></div>`;
+  const path=`<ol class="funnel-stages overview-stages" aria-label="Путь покупки">
+    ${Object.entries(headings).map(([key,[label,note]])=>`<li>
+      <button type="button" data-funnel-stage="${key}" aria-pressed="${stage===key}" ${locked}>
+        <strong>${label}</strong><span class="funnel-cell-detail">${note}</span>
+        ${stage===key?'<span class="stage-selected">Выбран</span>':""}</button>
+    </li>`).join("")}</ol>`;
+  if (!report || funnelView.loading) return `<div class="store-overview">${title}${controls}${path}${messages()}
+    ${state.error?"":'<p class="feedback" role="status">Читаю данные…</p>'}</div>`;
+  const visible=overviewRows(report).filter(row=>(stage==="all" || row.stage===stage) &&
+    (product==="all" || row.product===product));
+  const canMeasure=["kes","astra"].includes(product) || product==="all";
+  const stageNotes=canMeasure && ["license","cart","paid"].includes(stage) ?
+    stageSummary(report,report.orders[f.family],null,f.family,["","gap"],funnelView.waiting || report.audience_gap) : "";
+  const notice=visible.length ? visible.map(row=>`<article class="overview-row ${row.className}" data-product="${row.product}">
+    <div><p class="overview-product">${esc(row.label)}</p><h3>${esc(row.signal)}</h3><p class="by">${esc(row.scope)}</p></div>
+    ${row.cta}</article>`).join("") : stageNotes ? "" :
+    `<p class="note"><strong>Нет данных для сигнала</strong> · ${esc(report.audience_gap ||
+      (stage==="paid" ? report.payment_gap : product==="office" ?
+      "Дата ценового замера не попадает в выбранные периоды." : "В выбранном срезе нет сопоставимых измерений."))}</p>`;
+  return `<div class="store-overview">${title}${controls}${path}${messages()}
+    <section class="overview-findings"><div class="section-heading"><h2>Ближайшие решения</h2>
+      ${stage!=="all" ? button("Все этапы","funnel-stage","all","link") : ""}</div>
+      ${notice}${stageNotes}</section>
+    <div class="row overview-more">${button("Поиск продукта","page","catalog","link")}
+      ${button("Возможности роста","page","growth","link")}
+      ${button("После покупки · рекомендации ЛК","page","lk","link")}</div>
+    ${report.orders[f.family] && ["all","order"].includes(stage) ? ordersDetail(report) : ""}
+    ${canMeasure && ["license","cart","paid"].includes(stage) ? measuredDetails(report) : ""}
+    ${storeIndicators()}</div>`;
+}
+
+function astraDiagnostic(data) {
+  const {before,after}=data.periods;
+  const labels=state.data.funnel.windows;
+  const range=astraDateRange(labels[data.filter.before].start,labels[data.filter.after].start);
+  const evidence=(id,label)=>{
+    const fact=data.evidence.find(item=>item.id===id);
+    return fact ? sourceLink(fact,label) : "";
+  };
+  const metric=(key,id,heading)=>{
+    return `<tr><th scope="row">${heading}</th>${["before","after"].map(slot=>{
+      const value=data.periods[slot][key];
+      return `<td>${value ? ratio(value) : "Нет данных"}
+        ${value && key==="cart" ? `<span class="by">Покрытие ${value.rows}/${value.expected_rows} дней</span>` : ""}
+        ${value ? evidence("astra-"+id+"-"+slot,"Строки · "+data.periods[slot].label) : ""}</td>`;
+    }).join("")}</tr>`;
+  };
+  const isAlert=data.finding==="below90";
+  const hypothesis=isAlert ? "Проверить переход от итога подбора к добавлению в корзину на компьютере." :
+    "Сверить, как меняются прохождение подбора и добавления в выбранных неделях.";
+  return `<div class="wide radar-page">${button("← Обзор магазина","funnel-back",overviewBack(data.filter),"link")}
+    <p class="eyebrow">Astra Linux Special Edition · недели ${before.label} и ${after.label}</p>
+    <h1>Astra · ${range} 2026</h1>
+    <p class="lede">${isAlert ? `Две недели ниже порога ${data.threshold} · индекс ${before.index} → ${after.index}` :
+      `Индекс самостоятельных заказов ${before.index ?? "—"} → ${after.index ?? "—"}`}</p>
+    <section class="panel astra-diagnostic"><h2>Где меняется путь покупки</h2>
+      <div class="table-wrap"><table><thead><tr><th>Показатель</th><th>${before.label}</th><th>${after.label}</th></tr></thead><tbody>
+        <tr><th scope="row">Самостоятельные заказы · индекс BI</th><td>${before.index ?? "Нет данных"}</td><td>${after.index ?? "Нет данных"}</td></tr>
+        ${metric("step","cfg_step_dropoff","Шаг 1 → 2 · все устройства")}
+        ${metric("cart","cfg_add_to_cart_rate","Подбор → корзина · компьютеры")}
+      </tbody></table></div>
+      <p class="by">${evidence("sales-astra","Строки «Продаж»")} ·
+        ${evidence(state.data.store.definitions.family_orders_idx.id,"Правило порога в справочнике")}</p>
+    </section>
+    <form id="radar-astra-form" class="panel" data-stage="${isAlert?"cart":"license"}">
+      <h2>Что проверить</h2><p>${hypothesis}</p>
+      ${isAlert && before.cart && after.cart ? `<p>Открытия на компьютерах выросли с ${before.cart.d} до ${after.cart.d}.
+        Добавления ${before.cart.n===after.cart.n?`остались на уровне ${after.cart.n}`:`изменились с ${before.cart.n} до ${after.cart.n}`}.</p>` : ""}
+      <p class="by">В данных нет общего идентификатора заказа и визита. Связь с изменением индекса BI не установлена.</p>
+      <button class="primary">${isAlert?"Проверить путь до корзины":"Проверить вход в подбор Astra"}</button>
+    </form>${messages()}</div>`;
 }
 
 function storeIndicators() {
   const store=state.data.store;
   if (!store) return "";
-  const office=store.catalog.office.prices, lk=store.lk.counts;
-  return `<section class="panel"><h2>Другие решения по магазину</h2>
-    <div class="radar-run-row"><div><strong>Office · ${office.below_store} из ${office.matched.length} сопоставимых цен ниже Store</strong>
-      <span class="by">Выбор предложения · октябрьский замер</span></div>${button("Проверить предложение Office","catalog","office","secondary")}</div>
-    <div class="radar-run-row"><div><strong>Личный кабинет · ${lk.click_visits} клика на ${lk.viewed_visits} визитов с просмотром</strong>
-      <span class="by">После покупки · рекомендации</span></div>${button("Открыть рекомендации ЛК","page","lk","secondary")}</div>
-  </section>
-    <details class="panel"><summary>История магазина · ${store.releases.length} событий</summary>
+  return `<details class="panel"><summary>История магазина · ${store.releases.length} событий</summary>
       ${store.releases.map(r=>`<div class="radar-run-row"><div><strong>${esc(r.title)} · ${prettyDate(r.date)}</strong>
         <p>${esc(r.text)}</p><span class="by">${esc(r.metrics || "")}</span></div>${sourceLink(r,"Строка события")}</div>`).join("")}</details>
     <details class="panel"><summary>Справочник показателей · ${Object.keys(store.definitions).length}</summary>
@@ -158,7 +313,10 @@ function officePage(ref) {
   const store=state.data.store;
   const item=store.catalog.office, prices=item.prices, detail=detailForRoute();
   if (!detail) return `<h1>${esc(item.title)}</h1>${radarLoading()}`;
-  return `<div class="wide radar-page">${button("← Ассортимент","page","catalog","link")}
+  const pricesFirst=hashParams().get("tab")==="prices";
+  const table=`<section class="panel"><h2>Цены и условия</h2>${productPrices(prices)}</section>`;
+  return `<div class="wide radar-page">${hashParams().get("from") ? button("← Обзор магазина","funnel-back",overviewBack(),"link") :
+    button("← Ассортимент","page","catalog","link")}
     <p class="eyebrow">Выбор предложения · октябрь 2026 · EP2-06605</p><h1>${esc(item.title)}</h1>
     <section class="panel radar-signal down"><div><p class="label">Ценовой сигнал</p>
       <h2>${prices.below_store} из ${prices.matched.length} сопоставимых цен ниже Store</h2>
@@ -166,8 +324,7 @@ function officePage(ref) {
       <p class="by">Сравнение по артикулу и отметке сопоставимости. Замер показывает цены на дату проверки.</p></div>
       ${detail.run ? (detail.run.status === "done" ? button("К решению","finding-decision","","link") : "") :
         `<form id="radar-start-form" data-mode="office"><button class="primary">Исследовать предложение Office</button></form>`}
-    </section>${messages()}${projectResult(detail.run)}
-    <section class="panel"><h2>Цены и условия</h2>${productPrices(prices)}</section>
+    </section>${messages()}${pricesFirst ? table : ""}${projectResult(detail.run)}${pricesFirst ? "" : table}
     <section class="panel"><h2>Самостоятельный счёт</h2><p>${esc(item.invoice.text)}</p>${sourceLink(item.invoice,"Открыть прохождение")}</section>
     <section class="panel"><h2>Инициатива Softline</h2><p>${esc(store.initiatives.office.text)}</p>
       ${sourceLink(store.initiatives.office,"Слайд 18")}${item.sources.map(s=>sourceLink(s)).join(" · ")}</section>

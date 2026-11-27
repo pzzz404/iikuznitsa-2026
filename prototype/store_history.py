@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 from openpyxl import load_workbook
 
 from evidence import SOURCE, read_rows
-from funnel import SALES_NAMES, load_history, weeks
+from funnel import PRODUCTS, SALES_NAMES, WINDOWS, days_in, load_history, report, selection, weeks
 
 PRODUCT_IDS = ("sobol", "cryptopro", "redos", "kompas", "astra", "contentreader", "nanocad", "office", "kes", "chatgpt")
 
@@ -152,11 +152,14 @@ def export_history():
                               a["value"] < threshold and b["value"] < threshold and
                               date.fromisoformat(b["date"]) - date.fromisoformat(a["date"]) == timedelta(days=7)]
         lk, lk_rows, reach_rows, reach_full = Counter(), {}, {}, Counter()
+        astra_rows = {"cfg_step_dropoff": {}, "cfg_add_to_cart_rate": {}}
         filters_day = next(r["date"] for r in releases if r["title"] == "R-09")
         max_metric_date = ""
         for number, row in enumerate(read_rows(book["Метрики_данные"]), 2):
             day, metric = str(row["date"])[:10], row["metric_id"]
             max_metric_date = max(max_metric_date, day)
+            if row["product"] == PRODUCTS["astra"] and metric in astra_rows:
+                astra_rows[metric].setdefault(row["segment"], {}).setdefault(day, []).append(number)
             if metric == "cfg_reach_rate" and row["product"] == "Конфигуратор Kaspersky" and row["segment"] in ("desktop","mobile","tablet"):
                 reach_rows.setdefault(day, []).append(number)
                 if day >= filters_day:
@@ -177,7 +180,7 @@ def export_history():
             "alerts": alerts, "threshold": threshold, "catalog": catalog, "initiatives": initiatives,
             "lk": {"counts": dict(lk), "sources": lk_sources}, "reach_rows": reach_rows,
             "reach_full": {"n":reach_full["configurator_visits"],"d":reach_full["family_visits"],"since":filters_day},
-            "interviews": interview_records(),
+            "interviews": interview_records(), "astra_rows": astra_rows,
             "book": path.name, "version": version}
 
 
@@ -189,6 +192,53 @@ def sales_basis(store, family, windows):
             "source": f'{store["book"]} · Продажи · строки {ids}', "version": store["version"],
             "text": "; ".join(f'{point["date"]} · {point["value"]}' + (" (неполная)" if point["partial"] else "")
                               for point in points) + ". База 100: 04.05–28.06.2026."}
+
+
+def astra_alert(store, before, after):
+    selected_days = set(days_in(WINDOWS[before]) + days_in(WINDOWS[after]))
+    matches = [pair for pair in store["alerts"]["astra"]
+               if all(point["date"] in selected_days for point in pair)]
+    return matches[-1] if matches else None
+
+
+def astra_diagnostic(store, args):
+    filters = selection(args)
+    finding = args.get("finding", "comparison")
+    before, after = filters["before"], filters["after"]
+    windows = [WINDOWS[key] for key in (before, after)]
+    if filters["family"] != "astra" or not windows[0].get("mate") or finding not in {"comparison", "below90"}:
+        raise ValueError("Для разбора Astra выберите пару соседних недель.")
+    pair = next((points for points in store["alerts"]["astra"]
+                 if [p["date"] for p in points] == [w["start"] for w in windows]), None)
+    if finding == "below90" and pair is None:
+        raise ValueError("Для указанных недель нет сигнала ниже порога.")
+    all_devices = report(store["history"], {**filters, "device": "all", "audience": "all"})
+    desktop = report(store["history"], {**filters, "device": "desktop", "audience": "all"})
+    evidence = [sales_basis(store, "astra", windows), store["definitions"]["family_orders_idx"]]
+    periods = {}
+    for slot, window in zip(("before", "after"), windows, strict=True):
+        cart = desktop["pairs"][slot].get("cfg_add_to_cart_rate")
+        steps = all_devices["steps"][slot]
+        step = steps[0] if steps else None
+        points = all_devices["series"][slot]
+        periods[slot] = {"label":window["label"], "index":points[0]["value"] if points else None,
+                         "cart":cart, "step":step}
+        for metric, device, measure, title in (
+            ("cfg_add_to_cart_rate", "desktop", cart, "Подбор → корзина · компьютеры"),
+            ("cfg_step_dropoff", "all", step, "Шаг 1 → 2 · все устройства")
+        ):
+            if not measure:
+                continue
+            rows = store["astra_rows"][metric].get(device, {})
+            numbers = sorted(number for day in days_in(window) for number in rows.get(day, []))
+            record = ", ".join(map(str, numbers))
+            evidence.append({"id":f"astra-{metric}-{slot}", "type":"Счётчики", "title":title,
+                             "source":f'{store["book"]} · Метрики_данные · строки {record}',
+                             "version":store["version"],
+                             "text":f'{window["label"]}: {measure["n"]} из {measure["d"]}. '
+                                    f'Покрытие {measure["rows"]}/{measure["expected_rows"]}.'})
+    return {"filter":filters, "finding":finding, "threshold":store["threshold"], "periods":periods,
+            "visits":all_devices["visits"], "evidence":evidence}
 
 
 if __name__ == "__main__":

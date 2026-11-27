@@ -205,15 +205,16 @@ def view_run(db, run_id, include_result=True):
     return run
 
 
-def project_run(db, key, filters, ref):
+def project_run(db, key, filters, ref=None, summary=False):
     mode, stage = ("release","order") if key == "kes" else ("office","offer")
     subject = digest([mode, filters, stage])
     if not ref:
         row = db.execute("""SELECT id FROM radar_runs WHERE subject=?
-                            AND json_extract(input,'$.finding')=? ORDER BY created DESC LIMIT 1""",
+                            AND json_extract(input,'$.finding')=?
+                            ORDER BY (status='done') DESC, created DESC LIMIT 1""",
                          (subject,key)).fetchone()
         ref = row["id"] if row else None
-    run = view_run(db, ref) if ref else None
+    run = view_run(db, ref, include_result=not summary) if ref else None
     if ref and (not run or run["finding"] != key or run["filter"] != filters):
         raise ValueError("Это исследование относится к другой находке или периоду.")
     return run
