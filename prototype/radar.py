@@ -207,7 +207,8 @@ def study_view(db, record, case, run_id, operations=None):
                 and (row["id"], row["task_id"], row["source"], row["record"], row["version"], row["text"])
                 == tuple(proof.get(k) for k in ("record_id", "task_id", "source", "address", "version", "quote"))
                 and all((row.get("source_id"), row["record"], row["version"]))
-                and store_research.task_fit(row, case["scope"]["семейство"])):
+                and store_research.task_fit(row, case["scope"]["семейство"])
+                and store_research.task_evidence(row).get(proof.get("model_basis"))):
             record["related"] = {"id": row["task_id"], "record_id": row["id"], "title": row["title"],
                                  "status": row["status"], "source": row["source"]}
             return record

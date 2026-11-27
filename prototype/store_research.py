@@ -11,7 +11,7 @@ QUESTIONS = {
     "kes": "Что проверить первым, чтобы различить сбой подбора Kaspersky, потерю события корзины и переход к менеджеру?",
     "office": "Какое решение принять по предложению Office Home and Business 2024: проверить цену, выставление счёта или сначала собрать экономику?",
 }
-MATCH_FORMAT = 4
+MATCH_FORMAT = 6
 TASK_FOCUS = "Сбой выбора или добавления в корзину либо ошибка передачи событий электронной торговли."
 GROUPS = {
     "kes": {"customers": ("interview", "Опыт покупателей и контрпример"), "price": ("competitor", "Проверка цены"),
@@ -102,15 +102,37 @@ def enum(values):
     return {"type": "string", "enum": values}
 
 
-def task_fit(task, family):
-    """Require direct evidence of the issue in the affected flow before allowing an amendment."""
-    title = task["title"].lower()
+def task_evidence(task):
     body = task["text"].lower()
-    scope = words(family) & words(f"{title} {body}")
-    defect = any(stem in f"{title} {body}" for stem in ("ошиб", "недоч", "сбой", "потер", "пропада", "не доход", "не переда", "не добав", "не работа"))
-    signals = (("событи" in body and any(stem in body for stem in ("переда", "метрик", "запис", "аналитик")))
-               or ("корзин" in body and any(stem in body for stem in ("добав", "подбор", "выбор"))))
-    return bool(scope and defect and signals)
+    return {
+        "telemetry": "событи" in body and any(stem in body for stem in ("переда", "метрик", "запис", "аналитик")),
+        "purchase": "корзин" in body and any(stem in body for stem in (
+            "не добав", "не попада", "сбой добавл", "ошибка добавл", "не помещ")),
+    }
+
+
+def task_signals(task, family):
+    """Find explicit terms for scope, a defect and the affected action in the source."""
+    description = (task["title"] + " " + task["text"]).lower()
+    scope = words(family) & words(description)
+    defect = any(stem in description for stem in ("ошиб", "недоч", "сбой", "потер", "пропада",
+                                                "не доход", "не переда", "не добав", "не работа"))
+    return bool(scope), defect, any(task_evidence(task).values())
+
+
+def task_fit(task, family):
+    return all(task_signals(task, family))
+
+
+def support_type(row, connect, daily_limit, run_id, scenario):
+    return respond(connect, daily_limit, run_id, "Проверка основания",
+                   "В записи описана неисправность. Какой тип проверки поддерживает именно эта запись? "
+                   "telemetry — передача или учёт событий. purchase — фактический сбой выбора и добавления товара. "
+                   "none — данных в записи недостаточно. Выбери один тип по тексту.\n"
+                   f'{row["title"]}\n{row["text"]}\n'
+                   "Определи предмет описанного дефекта, без оценки причины падения заказов.",
+                   schema({"basis": enum(["telemetry", "purchase", "none"])}),
+                   lambda reply: plain(reply["basis"], 15), 35, scenario)
 
 
 def match_task(opened, case, connect, daily_limit, run_id, scenario):
@@ -119,6 +141,11 @@ def match_task(opened, case, connect, daily_limit, run_id, scenario):
         return {"status": "none", "reason": "По этому запросу нет доступной записи бэклога."}
     family = case["scope"]["семейство"]
     keys = [*tasks, "none"]
+    entries = []
+    for row in tasks.values():
+        scope, defect, signals = ("да" if flag else "нет" for flag in task_signals(row, family))
+        entries.append(f'{row["task_id"]} | {row["title"]}\n{row["text"]}\n'
+                       f'Совпадения терминов: семейство — {scope}, дефект — {defect}, действие или запись — {signals}.')
 
     def validate(reply):
         selected = reply["task"]
@@ -132,19 +159,30 @@ def match_task(opened, case, connect, daily_limit, run_id, scenario):
         if not task_fit(row, family):
             return {**model, "status": "none",
                     "reason": "В открытом описании нет прямого основания связать проверку с этой задачей."}
-        return {**model, "status": "matched", "record_id": row["id"], "reason": reason,
+        return {**model, "status": "selected", "record_id": row["id"],
                 "task_id": row["task_id"], "source": row["source"], "address": row["record"],
                 "version": row["version"], "quote": row["text"]}
 
-    return respond(connect, daily_limit, run_id, "Сопоставление задачи",
-                   f"Найди задачу для проверки сигнала о покупках {family}. Что ищем: {TASK_FOCUS} "
-                   f"У подходящей задачи описание связывает сбой именно с {family}. "
-                   "Сравни все описания. Верни номер задачи с такой связью. Если её нет, task=none. "
-                   "Навигация, штатный запуск фильтров и плановые изменения аналитики без дефекта дают none. "
-                   "В reason одним предложением по-русски объясни связь или её отсутствие по описанию. "
-                   "Задача может обосновать проверку, причина падения ещё не установлена.\n" +
-                   "\n".join(f'{r["task_id"]} | {r["title"]}\n{r["text"]}' for r in tasks.values()),
-                   schema({"task": enum(keys), "reason": string()}), validate, 175, scenario)
+    prompt = (f"Найди задачу для проверки отклонения заказов {family}. Ищем {TASK_FOCUS}\n"
+              + "\n\n".join(entries) +
+              f"\nСначала reason: по-русски объясни, описана ли ошибка именно в {family} и в чём она. "
+              "Слова о магазине, меню или штатной работе сами по себе не подходят. "
+              "Затем task: номер описанной задачи. Если ни одна строка не описывает эту ошибку, task=none. "
+              "Признаки терминов помогают найти выдержку. Смысл оцени по полному описанию.")
+    selected = respond(connect, daily_limit, run_id, "Сопоставление задачи", prompt,
+                       schema({"reason": string(), "task": enum(keys)}), validate, 160, scenario)
+    if selected["status"] != "selected":
+        return selected
+    row = tasks[selected["task_id"]]
+    basis = support_type(row, connect, daily_limit, run_id, scenario)
+    reasons = {
+        "telemetry": "В описании указана ошибка передачи событий. Задача подходит для сверки события с действием.",
+        "purchase": "В описании указан дефект покупательского действия. Задача подходит для воспроизведения сбоя.",
+    }
+    if not task_evidence(row).get(basis):
+        return {"status": "none", "model_task": selected["model_task"], "model_reason": selected["model_reason"],
+                "model_basis": basis, "reason": "Qwen не подтвердила связь по открытому описанию."}
+    return {**selected, "status": "matched", "model_basis": basis, "reason": reasons[basis]}
 
 
 def synthesize(case, run_id, store, connect, daily_limit):
