@@ -6,6 +6,7 @@ from datetime import date
 import funnel
 import growth_research
 import store_research
+import mail_outbox
 from store_history import sales_basis
 from inference import study_funnel, funnel_study_identity
 from workflow import digest, now, usage_for, usage_sum
@@ -97,6 +98,7 @@ def setup(db):
     db.execute("CREATE INDEX IF NOT EXISTS radar_ops_run ON radar_operations(run)")
     db.execute("""UPDATE radar_runs SET status='failed',error='Исторический запуск относился к шаблону.'
                   WHERE mode='growth' AND status='queued' AND json_extract(input,'$.finding') IS NULL""")
+    mail_outbox.setup(db)
 
 
 def enqueue(db, mode, case):
@@ -118,7 +120,7 @@ def next_run(db):
     return None
 
 
-def worker(connect, daily_limit, corpus, store=None):
+def worker(connect, daily_limit, corpus, store=None, mail=None, mail_wake=None):
     signal = threading.Event()
 
     def run():
@@ -142,6 +144,10 @@ def worker(connect, daily_limit, corpus, store=None):
                     with connect() as db:
                         db.execute("UPDATE radar_runs SET status='done',study=?,finished=? WHERE id=?",
                                    (run_id, now(), run_id))
+                        if mail and case.get("finding") == "kes":
+                            mail_outbox.enqueue(db, run_id, case, store, mail)
+                    if mail_wake:
+                        mail_wake.set()
                 except (ValueError, RuntimeError) as exc:
                     with connect() as db:
                         db.execute("UPDATE radar_runs SET status='failed',error=?,finished=? WHERE id=?",
@@ -172,7 +178,8 @@ def recent(db):
     rows = db.execute("""SELECT r.*,
                       (SELECT count(*) FROM radar_operations WHERE run=r.id) AS operation_count
                       FROM radar_runs r ORDER BY (status='done' AND seen=0) DESC, created DESC LIMIT 30""")
-    return [public_run(row) | {"operation_count": row["operation_count"]} for row in rows]
+    return [public_run(row) | {"operation_count": row["operation_count"],"mail":mail_outbox.status(db,row["id"])}
+            for row in rows]
 
 
 def view_run(db, run_id, include_result=True):
@@ -180,6 +187,7 @@ def view_run(db, run_id, include_result=True):
     if not row:
         return None
     run = public_run(row)
+    run["mail"] = mail_outbox.status(db,run_id)
     if include_result and run["finding"]:
         case = json.loads(row["input"])
         run["corpus_version"] = case["corpus_version"]

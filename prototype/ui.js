@@ -167,10 +167,10 @@ function backlog(id) {
         ${task.radar.owner ? `<p class="by">Владелец · ${esc(task.radar.owner)}. Вернуться ${prettyDate(task.radar.due)}.</p>` : ""}
         ${task.radar.finding ? button("Открыть исходную находку","run",task.radar.id,"link") : button("Открыть исследование", "run", task.radar.id, "link")}` : ""}
       <div class="row actions">${button("Открыть связанную проверку", "check", id, "primary")}</div>
-      ${task.radar?.linked ? `<details><summary>Локальный черновик для Redmine · ${esc(task.radar.linked)}</summary>
-        <p>${esc(task.title)}</p><p>${esc(task.criterion)}</p>
-        <p>Основания · ${task.study_data.evidence.filter(row=>task.study_data.selected.includes(row.id)).map(r=>sourceLink(r)).join(" · ")}</p>
-        <p class="by">Локальная запись в PM Radar.</p></details>` : ""}
+      ${state.data.store && task.radar?.finding ? `<details><summary>Экспорт для Redmine${task.radar.linked ? " · "+esc(task.radar.linked) : ""}</summary>
+        <p><a class="link" href="/api/task/redmine.csv?id=${id}" download>Скачать CSV для Redmine</a></p>
+        <p class="by">В импорте выберите UTF-8 и запятую. Сопоставьте «Тема» и «Описание». В описании сохранены тег, критерий и адрес находки.</p>
+      </details>` : task.radar?.linked ? `<p class="by">Локальное дополнение к ${esc(task.radar.linked)}.</p>` : ""}
       ${messages()}</section>
     <section class="context"><h2>Свидетельства в задаче</h2><div class="grid">${task.study_data.evidence.map(sourceCard).join("")}</div></section>
     <details class="panel"><summary>Изменить задачу</summary>

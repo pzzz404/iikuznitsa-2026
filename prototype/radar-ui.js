@@ -431,6 +431,11 @@ async function pollRadar() {
     const detail = detailForRoute();
     const activeRun = detail?.run || (page==="research" ? detail : null);
     const current = radarView.runs.find(run=>run.id===(activeRun?.id || id));
+    if (activeRun?.status==="done" && current?.status==="done" &&
+        JSON.stringify(activeRun.mail)!==JSON.stringify(current.mail)) {
+      activeRun.mail = current.mail;
+      updateProjectMail(current.mail);
+    }
     if (page==="research" && current && detailForRoute()?.status!==current.status)
       void loadRadarDetail(radarDetailPath(page,id), true);
     if (["growth","deviation","catalog"].includes(page) && activeRun && current && (activeRun.status !== current.status ||

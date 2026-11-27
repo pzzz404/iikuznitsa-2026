@@ -16,6 +16,8 @@ import openrouter
 import funnel
 import radar
 import growth_research
+import mail_outbox
+from handoff import redmine_csv
 from store_history import sales_basis
 from evidence import ROOT, TOPICS, facts_and_tasks
 from inference import DECISIONS, ModelBusy, study, study_funnel
@@ -89,7 +91,10 @@ def setup():
         setup_workflow(db)
         if FUNNEL:
             radar.setup(db)
-    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS, STORE) if FUNNEL else None
+    mail_path = os.getenv("PM_TEST_MAIL_CONFIG")
+    mail = mail_outbox.load(mail_path, PUBLIC_ORIGIN) if mail_path and STORE and INVITES else None
+    mail_wake = mail_outbox.worker(connect, mail) if mail else None
+    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS, STORE, mail, mail_wake) if FUNNEL else None
 
 
 def uploaded(db):
@@ -186,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def reply(self, data, kind="application/json; charset=utf-8", status=200, cookie=None):
+    def reply(self, data, kind="application/json; charset=utf-8", status=200, cookie=None, attachment=None):
         raw = data if isinstance(data, bytes) else serialize(data)
         self.send_response(status)
         self.send_header("Content-Type", kind)
@@ -199,6 +204,8 @@ class Handler(BaseHTTPRequestHandler):
                          "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         if cookie:
             self.send_header("Set-Cookie", cookie)
+        if attachment:
+            self.send_header("Content-Disposition", f'attachment; filename="{attachment}"')
         self.end_headers()
         try:
             self.wfile.write(raw)
@@ -230,6 +237,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply((HERE / "fonts/manrope.ttf").read_bytes(), "font/ttf")
         if not self.authorized():
             return self.denied()
+        if STORE and INVITES and path == "/api/task/redmine.csv":
+            try:
+                task_id = int(dict(parse.parse_qsl(target.query, max_num_fields=2)).get("id", ""))
+            except ValueError:
+                return self.reply({"error":"Задача не найдена."}, status=404)
+            with connect() as db:
+                row = db.execute("SELECT t.*,s.payload FROM tasks t JOIN studies s ON s.id=t.study WHERE t.id=?",
+                                 (task_id,)).fetchone()
+                task = task_details(db, row) if row else None
+            if not task or not task.get("radar", {}).get("finding"):
+                return self.reply({"error":"Для этой задачи нет экспорта с адресом находки."}, status=404)
+            return self.reply(redmine_csv(task, TAG, PUBLIC_ORIGIN), "text/csv; charset=utf-8",
+                              attachment=f"pm-radar-{task_id:03d}-redmine.csv")
         if not EVIDENCE_FILE and path.startswith("/images/") and path[8:] in IMAGES:
             file = ROOT / "research/store" / IMAGES[path[8:]]
             if file.exists():

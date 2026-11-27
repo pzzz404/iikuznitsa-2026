@@ -103,12 +103,30 @@ function projectResult(run) {
         ${sourceLink(fact, "Открыть основание · " + fact.title)}</article>`;
     }).join("")}</div>
     <p class="by">${esc(item.historical_result)}</p>
+    <div id="project-mail-status">${projectMail(run.mail)}</div>
     ${run.finding === "kes" ? `<details><summary>Как результат изменит решение</summary>
       <p>Повторяется сбой действия — воспроизвести на проблемной конфигурации и оценить откат.</p>
       <p>Действие работает, запись теряется — уточнить T-08 и проверить телеметрию.</p>
       <p>Заказы сместились к менеджеру — сверить общий ряд и проверить доступность самостоятельной закупки.</p></details>` : ""}
     <details><summary>Прочитанные записи</summary><div class="grid">${item.evidence.map(sourceCard).join("")}</div></details>
     </section>${growthCost(run)}${growthOperations(run)}${projectDecision(run)}`;
+}
+
+function projectMail(mail) {
+  if (!mail) return "";
+  const statuses = {queued:"в очереди",sending:"отправляется",accepted:"принято",
+    failed:"отклонено",uncertain:"подтверждение не получено"};
+  return `<details><summary>Тестовое письмо · ${esc(mail.recipient)}</summary>
+    <p>SMTP · ${esc(statuses[mail.status])}. ${mail.smtp_at ? esc(hDate.format(new Date(mail.smtp_at))) + " МСК." : ""}</p>
+    <p>Входящие · ${mail.inbox_at ? "письмо найдено " + esc(hDate.format(new Date(mail.inbox_at))) + " МСК." : "появление письма пока не подтверждено."}</p></details>`;
+}
+
+function updateProjectMail(mail) {
+  const node = document.querySelector("#project-mail-status");
+  if (!node) return;
+  const open = node.querySelector("details")?.open;
+  node.innerHTML = projectMail(mail);
+  if (open && node.firstElementChild) node.firstElementChild.open = true;
 }
 
 function projectDecision(run) {
