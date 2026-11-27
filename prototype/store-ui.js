@@ -16,6 +16,8 @@ function storeFacts() {
 }
 
 function coverageCaption(store) {
+  if (state.data.partner_review) return "Продажи, Метрика и конкурентное исследование заказчика";
+  if (state.data.kes_excel) return "Kaspersky · Excel заказчика. Astra и Office · учебные данные";
   if (state.data.cloud_research) return "Учебные продажи и метрики";
   if (store.demo) return "Демо жюри · согласованные агрегаты и учебный бэклог";
   const c = store.coverage;
@@ -115,7 +117,7 @@ function overviewRows(report) {
       run && ["queued","running"].includes(run.status) ? "Открыть ход исследования" : "Открыть отклонение";
     const progress=done ? (run.resolution ? "Решение сохранено" : "Вывод готов к решению") :
       run ? radarStates[run.status] : "Исследование не запускалось для этого периода";
-    rows.push({product:"kes",stage:"order",label:"Kaspersky",signal:"Индекс самостоятельных заказов "+signed(kes.change)+"%",
+    rows.push({product:"kes",stage:"order",label:state.data.kes_excel ? "Kaspersky · Excel заказчика" : "Kaspersky",signal:"Индекс самостоятельных заказов "+signed(kes.change)+"%",
       scope:dates+" · "+progress,className:kes.change<0?"down":"",
       cta:button(action,"deviation",deviationRef(filters)+(run?"~"+run.id:""),"secondary")});
   }
@@ -265,8 +267,9 @@ function projectResult(run) {
   return `<section class="panel finding-result"><p class="eyebrow">Исследование ${esc(run.id)}</p>
     <div class="section-heading"><h2>Что предлагает Qwen</h2>
     ${button(run.resolution ? "К решению PM" : "Принять решение","finding-decision","","link")}</div>
-    ${item.cloud_claims ? '<p class="by">Qwen3‑32B · OpenRouter</p>' : ""}
+    ${item.cloud_claims || item.partner_cloud ? '<p class="by">Qwen3‑32B · OpenRouter</p>' : ""}
     <p class="lede">${esc(item.action)}</p>
+    ${item.partner_cloud ? `<div class="grid finding-evidence"><article><h3>Как принять задачу</h3><p>${esc(item.criterion)}</p></article><article><h3>Как оценить продажи после релиза</h3><p>${esc(item.followup)}</p></article></div>` : ""}
     <div class="grid finding-evidence">${item.cloud_claims ? cloudEvidence(item.cloud_claims, facts) : item.selected.map((id,i)=>{
       const fact=facts.get(id);
       return `<article><h3>${i?"Что ограничивает вывод":"Основание проверки"}</h3><p>${esc(fact.text)}</p>
@@ -357,7 +360,7 @@ function officePage(ref) {
   const table=`<section class="panel"><h2>Цены и условия</h2>${productPrices(prices)}</section>`;
   return `<div class="wide radar-page">${hashParams().get("from") ? button("← Обзор магазина","funnel-back",overviewBack(),"link") :
     button("← Ассортимент","page","catalog","link")}
-    <p class="eyebrow">Выбор предложения · ${prettyDate(prices.matched[0].date)}${state.data.cloud_research ? " · учебный замер" : " · EP2-06605"}</p><h1>${esc(item.title)}</h1>
+    <p class="eyebrow">Выбор предложения · ${prettyDate(prices.matched[0].date)}${state.data.cloud_research && !state.data.partner_review ? " · учебный замер" : " · EP2-06605"}</p><h1>${esc(item.title)}</h1>
     <section class="panel radar-signal down"><div><p class="label">Ценовой сигнал</p>
       <h2>${prices.below_store} из ${prices.matched.length} сопоставимых цен ниже Store</h2>
       <p>Цена Store · <strong>${number(prices.store)} ₽</strong>. Бессрочная лицензия на один ПК.</p>
@@ -367,7 +370,7 @@ function officePage(ref) {
         `<form id="radar-start-form" data-mode="office"><button class="primary">Исследовать предложение Office</button></form>`}
     </section>${messages()}${pricesFirst ? table : ""}${projectResult(detail.run)}${pricesFirst ? "" : table}
     <section class="panel"><h2>Самостоятельный счёт</h2><p>${esc(item.invoice.text)}</p>${sourceLink(item.invoice,"Открыть прохождение")}</section>
-    <section class="panel"><h2>${state.data.cloud_research ? "Учебная инициатива" : "Инициатива Softline"}</h2><p>${esc(store.initiatives.office.text)}</p>
+    <section class="panel"><h2>${state.data.cloud_research && !state.data.partner_review ? "Учебная инициатива" : "Инициатива Softline"}</h2><p>${esc(store.initiatives.office.text)}</p>
       ${sourceLink(store.initiatives.office,state.data.cloud_research ? "Открыть запись" : "Слайд 18")}${item.sources.map(s=>sourceLink(s)).join(" · ")}</section>
   </div>`;
 }

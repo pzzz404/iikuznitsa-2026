@@ -291,9 +291,9 @@ class Handler(BaseHTTPRequestHandler):
                                    "research": research, "tasks": tasks, "tag": TAG, "deferred": deferred,
                                    "imported": [{"id": r["task_id"], "title": r["title"], "status": r["status"]}
                                                 for r in IMPORTED],
-                                   "crm": CRM, "sample": bool(EVIDENCE_FILE) or JURY_CLOUD, "jury": bool(INVITES),
+                                   "crm": [] if STORE and STORE.get("format") == "partner-store-v1" else CRM, "sample": bool(EVIDENCE_FILE) or JURY_CLOUD, "jury": bool(INVITES),
                                    "demo_store": bool(STORE and STORE.get("synthetic")),
-                                   "external": openrouter.ENABLED or JURY_CLOUD, "cloud_research": JURY_CLOUD,
+                                   "external": openrouter.ENABLED or JURY_CLOUD, "cloud_research": JURY_CLOUD, "partner_review": bool(STORE and STORE.get("format") == "partner-store-v1"), "kes_excel": bool(STORE and STORE.get("excel_kes")),
                                    "funnel": funnel.options(FUNNEL),
                                    "catalog": radar.CATALOG if FUNNEL and not JURY_CLOUD else {},
                                    "growth": growth_research.finding(RESEARCH_CORPUS) if FUNNEL else None,
@@ -313,6 +313,10 @@ class Handler(BaseHTTPRequestHandler):
                 args = dict(parse.parse_qsl(target.query, max_num_fields=12))
                 if path == "/api/radar/deviation":
                     result = radar.deviation(FUNNEL, args, STORE)
+                    if STORE and STORE.get("excel_kes") and result["filter"]["family"] == "kes":
+                        excel = STORE["excel_kes"]
+                        result["excel"] = {"book":excel["book"], "weeks":excel["sales"]["kes"],
+                            "definition":excel["definitions"]["family_orders_idx"]["text"]}
                     result.pop("case")
                     if STORE:
                         with connect() as db:

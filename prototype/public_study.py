@@ -58,7 +58,11 @@ def kes_case():
             continue
         rows.append(record(row["id"], "Задача", row["title"], row["text"], row["source"],
                            mechanism=row.get("mechanism"), version=row["version"], address=row["record"]))
-    steps = {
+    return {"question": QUESTION, "rows": rows, "mechanism": "cart_event", "steps": kes_steps()}
+
+
+def kes_steps():
+    return {
         "test": slot("Первая проверка", {
             "replay": "Повторить добавление выбранной лицензии и в одной попытке зафиксировать товар в корзине и запись события.",
             "trend": "Сопоставить индексы вокруг даты релиза.",
@@ -94,7 +98,7 @@ def kes_case():
             "events": "Оценить изменение заказов по полноте записи события корзины.",
         }, ("bi",)),
     }
-    return {"question": QUESTION, "rows": rows, "mechanism": "cart_event", "steps": steps}
+
 
 
 def enum(values):
@@ -228,6 +232,9 @@ def match_task(call, case, tasks, first_check, on_open):
         return "none", "none", "В учебном бэклоге нет записей.", []
     by_id = {row["id"]: row for row in tasks}
     candidates = [{"id": row["id"], "title": row["title"], "description": row["text"]} for row in tasks]
+    for item, row in zip(candidates, tasks):
+        if "status" in row:
+            item["status"] = row["status"]
     if on_open:
         on_open("Бэклог по описаниям", tasks, len(tasks))
     fields = {"task": list(by_id) + ["none"]}

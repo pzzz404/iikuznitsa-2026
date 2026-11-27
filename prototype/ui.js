@@ -302,8 +302,10 @@ function usagePage() {
 function render() {
   if (!state.data) return;
   const sampleNote = document.querySelector("#sample-note");
-  sampleNote.hidden = !state.data.demo_store;
-  if (state.data.cloud_research) sampleNote.textContent =
+  sampleNote.hidden = !state.data.demo_store && !state.data.partner_review;
+  if (state.data.partner_review) sampleNote.textContent = "Данные заказчика · BI, Метрика, исследования и бэклог. Разбор выполняет Qwen3‑32B.";
+  else if (state.data.kes_excel) sampleNote.textContent = "Kaspersky · данные Excel заказчика. Astra и Office · учебные кейсы. Исследования выполняет Qwen3‑32B.";
+  else if (state.data.cloud_research) sampleNote.textContent =
     "Учебный набор · показатели, интервью и бэклог вымышлены. Исследование выполняет Qwen3‑32B через OpenRouter.";
   else if (state.data.store?.demo) sampleNote.textContent =
     "Стенд жюри · согласованные агрегаты BI и веб-аналитики. Остальные материалы и бэклог — учебные.";

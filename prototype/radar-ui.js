@@ -88,6 +88,20 @@ function openDeviation() {
   const i = item.index;
   const label = `Самостоятельные заказы ${item.family} ${i.change < 0 ? "↓" : "↑"} ${number(Math.abs(i.change))}%`;
   const scope = item.scope["периоды"].join(" и ");
+  if (item.excel) {
+    const windows = [item.excel.weeks.slice(0,6), item.excel.weeks.slice(6)];
+    const table = rows => `<div><p><b>Продажи · C${rows[0].row}:C${rows.at(-1).row}</b></p><table>
+      <thead><tr><th>Строка</th><th>A · Дата недели</th><th>C · Индекс</th></tr></thead>
+      <tbody>${rows.map(w=>`<tr><td>${Number(w.row)}</td><td>${prettyDate(w.date)}</td><td>${number(w.value)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><th colspan="2">Среднее за шесть недель</th><th>${number(rows.reduce((a,w)=>a+w.value,0)/rows.length)}</th></tr></tfoot></table></div>`;
+    return `<div class="wide radar-page">${button("← Обзор магазина","funnel-back",overviewBack(f),"link")}
+      <p class="eyebrow">Excel заказчика · ${esc(scope)}</p><h1>${esc(label)}</h1>
+      <p class="lede">Средний недельный индекс BI · ${number(i.before)} → ${number(i.after)}</p>
+      <details class="panel" id="excel-basis"><summary>Открыть строки Excel</summary><h3>${esc(item.excel.book)}</h3>
+      <div class="form-grid">${windows.map(table).join("")}</div><p><b>Метрики_справочник · D10</b>　${esc(item.excel.definition)}</p></details>
+      ${deviationRef(f)===deviationRef(state.data.funnel.defaults) ? cloudRunButton("release",item.run) : ""}
+      ${messages()}${item.run ? projectResult(item.run) : ""}</div>`;
+  }
   const relatedRuns = radarView.runs.filter(r=>r.mode==="release"&&deviationRef(r.filter)===deviationRef(f));
   const readyToStart = !state.data.cloud_research || deviationRef(f) === deviationRef(state.data.funnel.defaults);
   return `<div class="wide radar-page">${state.data.store ? button("← Обзор магазина","funnel-back",overviewBack(f),"link") :

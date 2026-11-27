@@ -8,6 +8,8 @@ import funnel
 import openrouter
 import public_catalog_studies
 import public_study
+import partner_cloud
+from pathlib import Path
 import radar
 import store_research
 from growth_research import respond
@@ -36,8 +38,17 @@ def check_config(invites, origin, limit):
 
 
 def store():
+    review = os.getenv("PM_PARTNER_REVIEW")
+    if review:
+        store = json.loads(Path(review).read_text())
+        if store.get("format") != "partner-store-v1":
+            raise ValueError("Ожидалась защищённая проекция трёх кейсов.")
+        return store
     sample = sample_store.build()
     sample["history"]["synthetic"] = True
+    projection = os.getenv("PM_KES_EXCEL_PROJECTION")
+    if projection:
+        partner_cloud.apply_projection(sample, json.loads(Path(projection).read_text()))
     return sample
 
 
@@ -61,9 +72,16 @@ def make_case(sample, args):
                  "периоды": [item["prices"]["matched"][0]["date"]]}
     else:
         scope = funnel.study_case(sample["history"], dict(filters, stage=stage))["scope"]
-    spec = specification(finding, sample)
+    if sample.get("format") == "partner-store-v1":
+        question = {"kes":"Как проверить отклонение самостоятельных заказов Kaspersky?",
+                    "astra":"Как проверить изменение корзины Astra на компьютерах?",
+                    "office":"Какие условия предложения Office стоит проверить?"}[finding]
+        spec = {"question":question, "mechanism":{"kes":"measurement","astra":"cart","office":"price"}[finding],
+                "version":sample["version"]}
+    else:
+        spec = specification(finding, sample)
     case = {"mode": mode, "finding": finding, "stage": stage, "filter": filters, "scope": scope,
-            "format": radar.CLOUD_FORMAT, "question": spec["question"], "corpus_version": digest(spec),
+            "format": radar.CLOUD_FORMAT, "question": spec["question"], "corpus_version": digest(sample["excel_kes"]) if finding == "kes" and "excel_kes" in sample else digest(spec),
             "mechanism": spec["mechanism"], "provider": "OpenRouter"}
     return mode, case
 
@@ -140,6 +158,10 @@ def synthesize(case, run_id, connect, daily_limit):
     _, expected = make_case(sample, {"mode": case.get("mode"), **case.get("filter", {})})
     if {key: value for key, value in case.items() if key != "previous"} != expected:
         raise ValueError("Исследование относится к другой версии учебного набора.")
+    if case["finding"] == "kes" and "excel_kes" in sample:
+        return partner_cloud.run(case, run_id, sample["excel_kes"], connect, daily_limit)
+    if sample.get("format") == "partner-store-v1":
+        return partner_cloud.other_study(case["finding"],case,run_id, sample,connect,daily_limit)
     spec = specification(case["finding"], sample)
 
     def call(step, prompt, schema, limit):
