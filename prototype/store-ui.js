@@ -277,7 +277,7 @@ function taskMatch(item) {
   const match = item.task_match;
   if (!match) return '<p class="by">В историческом прогоне связь с бэклогом отдельно не проверялась.</p>';
   if (!item.related) return `<div class="radar-related"><strong>Подходящая задача не найдена</strong>
-    <p>${esc(match.reason)}</p></div>`;
+    <p>${match.model_task && match.model_task !== "none" ? "Вариант Qwen · " + esc(match.model_task) + ". " : ""}${esc(match.reason)}</p></div>`;
   return `<div class="radar-related"><strong>Задача, которую нашла Qwen</strong>
     ${button(item.related.id + " · " + item.related.title, "fact", item.related.record_id, "link")}
     <p>${esc(match.reason)}</p><blockquote>${esc(match.quote)}</blockquote>
