@@ -188,6 +188,9 @@ def invite_ttl(token):
 class Handler(BaseHTTPRequestHandler):
     timeout = 12
 
+    def public_origin(self):
+        return PUBLIC_ORIGIN
+
     def log_message(self, fmt, *args):
         pass
 
@@ -248,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
                 task = task_details(db, row) if row else None
             if not task or not task.get("radar", {}).get("finding"):
                 return self.reply({"error":"Для этой задачи нет экспорта с адресом находки."}, status=404)
-            return self.reply(redmine_csv(task, TAG, PUBLIC_ORIGIN), "text/csv; charset=utf-8",
+            return self.reply(redmine_csv(task, TAG, self.public_origin()), "text/csv; charset=utf-8",
                               attachment=f"pm-radar-{task_id:03d}-redmine.csv")
         if not EVIDENCE_FILE and path.startswith("/images/") and path[8:] in IMAGES:
             file = ROOT / "research/store" / IMAGES[path[8:]]
@@ -328,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = parse.urlsplit(self.path).path
         origin = self.headers.get("Origin")
-        expected = PUBLIC_ORIGIN if INVITES else "http://" + self.headers.get("Host", "")
+        expected = self.public_origin() if INVITES else "http://" + self.headers.get("Host", "")
         if (INVITES and origin != expected) or (origin and origin != expected):
             return self.reply({"error": "Запрос с другого сайта"}, status=403)
         if path != "/api/invite" and not self.authorized():
