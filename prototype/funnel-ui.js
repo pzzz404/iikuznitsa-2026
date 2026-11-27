@@ -188,7 +188,7 @@ function stageSummary(r, chosen, comparator, other, status, gate) {
           ${r.filter.family==="kes" ? defaultAction("Проверить использование фильтров") : ""}
           ${r.filter.family==="astra" ? astraCompare : ""}</div>`},
     cart: {title:"Добавляли ли товар в корзину?", text:pair ? `Визиты с добавлением / визиты с открытием · ${cellRatio(pair)}` : r.cart_gap,
-      note:r.filter.family==="kes" ? "Связанная T-08 касается передачи событий. Первый шаг — сверить действие и запись." :
+      note:r.filter.family==="kes" ? "Первый шаг — сверить действие и запись события." :
         "Доля относится к открытиям конфигуратора в доступных строках.", action:defaultAction("Сверить события корзины")},
     order: {title:"Самостоятельные заказы", text:r.orders_gap, note:r.order_gap, action:""},
     paid: {title:"Дошёл ли заказ до оплаты?", text:r.payment_gap,
@@ -275,8 +275,7 @@ function currentStudy() {
 }
 
 function shownRelated(item) {
-  if (item.related) return button(item.related.id + " · " + item.related.title, "related", item.related.id, "link");
-  if (item.candidate) return `<p class="by">В бэклоге есть ${esc(item.candidate.id)}. Модель не отметила связь.</p>`;
+  if (item.related) return button(item.related.id + " · " + item.related.title, "fact", item.related.record_id, "link");
   return "";
 }
 

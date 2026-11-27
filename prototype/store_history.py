@@ -185,6 +185,13 @@ def export_history():
 
 
 def sales_basis(store, family, windows):
+    if store.get("demo"):
+        averages = store["history"]["orders"][family]
+        values = [f"{window['label']}: {averages[key]:.2f}" for key, window in WINDOWS.items()
+                  if window in windows and key in averages]
+        return {"id": "sales-" + family, "title": "Средний недельный индекс", "type": "Индекс BI",
+                "source": "Согласованные агрегаты для жюри · самостоятельные заказы", "version": store["version"],
+                "text": "; ".join(values) if values else "Для выбранного окна агрегат недоступен."}
     dates = {day for window in windows for day in weeks(window)}
     points = [point for point in store["sales"][family] if point["date"] in dates]
     ids = ", ".join(str(point["row"]) for point in points)
@@ -233,7 +240,8 @@ def astra_diagnostic(store, args):
             numbers = sorted(number for day in days_in(window) for number in rows.get(day, []))
             record = ", ".join(map(str, numbers))
             evidence.append({"id":f"astra-{metric}-{slot}", "type":"Счётчики", "title":title,
-                             "source":f'{store["book"]} · Метрики_данные · строки {record}',
+                             "source":("Согласованные агрегаты для жюри · шаги подбора" if store.get("demo")
+                                       else f'{store["book"]} · Метрики_данные · строки {record}'),
                              "version":store["version"],
                              "text":f'{window["label"]}: {measure["n"]} из {measure["d"]}. '
                                     f'Покрытие {measure["rows"]}/{measure["expected_rows"]}.'})

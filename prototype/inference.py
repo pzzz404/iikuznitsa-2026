@@ -119,25 +119,24 @@ def send_completion(prompt, schema, max_tokens=112, *, api_key=None, timeout=95)
 
 
 def funnel_completion(question, case, api_key):
-    candidate = case["candidate"]
     checks = {"reproduce": "Воспроизвести шаг", "event": "Сверить успешное действие и событие",
               "join": "Проверить, есть ли общий идентификатор"}
     available = {"license": ["reproduce", "event"], "cart": ["event", "reproduce"],
                  "order": ["event", "join"], "paid": ["join"]}[case["stage"]]
     options = {"support": [r["id"] for r in case["supports"]],
                "counter": [r["id"] for r in case["limitations"]],
-               "related": [candidate["id"], "none"] if candidate else ["none"], "check": available}
+               "check": available}
     schema = {"type": "object", "properties": {k: {"type": "string", "enum": values}
                                              for k, values in options.items()},
               "required": list(options), "additionalProperties": False}
     data = {"вопрос": question, "выбор PM": case["scope"],
             "за": [[r["id"], r["text"]] for r in case["supports"]],
             "ограничения": [[r["id"], r["text"]] for r in case["limitations"]],
-            "бэклог": candidate, "проверки": {k: checks[k] for k in available}}
+            "проверки": {k: checks[k] for k in available}}
     prompt = ("Ты продуктовый аналитик. По выбранному этапу укажи сильнейшее наблюдение (support), "
-              "ограничение вывода (counter), связанную задачу из бэклога (related) и первую проверку (check). "
+              "ограничение вывода (counter) и первую проверку (check). "
               "Если для корзины пропадают события, сначала сверь действие и событие. "
-              "При отсутствии связанной задачи верни none. Не рассчитывай числа.\n"
+              "Не рассчитывай числа.\n"
               + json.dumps(data, ensure_ascii=False))
     return send_completion(prompt, schema, api_key=api_key)
 
@@ -159,16 +158,13 @@ def study_funnel(case, connect, daily_limit):
         choice = json.loads(reply["choices"][0]["message"]["content"])
         support = next(r for r in case["supports"] if r["id"] == choice["support"])
         counter = next(r for r in case["limitations"] if r["id"] == choice["counter"])
-        related = case["candidate"]
-        if choice["related"] != (related or {}).get("id"):
-            related = None
     except (KeyError, IndexError, TypeError, ValueError, StopIteration) as exc:
         with connect() as db:
             db.execute("UPDATE calls SET status='no_result' WHERE id=?", (call,))
         raise ValueError("Модель вернула неполный разбор воронки. Повторите запрос.") from exc
     record = {"id": study_id, "topic": "funnel", "question": question, "scope": scope, "stage": case["stage"],
               "selected": [support["id"], counter["id"]], "evidence": [support, counter],
-              "related": related, "candidate": case["candidate"], "recommended_check": choice.get("check"),
+              "recommended_check": choice.get("check"),
               "confirmation": case["confirmation"], "action": case["action"], "criterion": case["criterion"],
               "historical_result": case["historical_result"], "model": MODEL + " · локально"}
     with connect() as db:

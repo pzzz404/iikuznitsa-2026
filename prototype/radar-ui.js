@@ -63,11 +63,6 @@ async function loadRadarDetail(path, force=false) {
   if (path === radarDetailPath(...route())) render();
 }
 
-function relatedCard(item) {
-  return item ? `<div class="radar-related"><strong>Связанный бэклог</strong>
-    ${button(item.id + " · " + item.title, "radar-related", item.id, "link")} ${chip(item.status)}</div>` : "";
-}
-
 function auditInfo(item) {
   const options = state.data.funnel;
   const f = item.filter;
@@ -78,7 +73,8 @@ function auditInfo(item) {
       Среднее недельных индексов. Для каждого семейства база 100 — 04.05–28.06.2026.</p>
     <p class="muted">Индекс не содержит абсолютных заказов, оплат или рублей. Для общего индекса магазина нужны веса по базовым объёмам.</p>
     <p class="by">${esc(item.source)}. ${item.jury ? "Покрытие демо включает согласованные агрегаты." : "Покрытие исходной книги: два семейства."}</p>
-    ${item.series ? item.evidence.filter(s=>s.id.startsWith("sales-")).map(s=>sourceLink(s,"Строки «Продаж» · "+(s.id==="sales-kes"?"Kaspersky":"Astra"))).join(" · ") +
+    ${item.definition ? item.evidence.filter(s=>s.id.startsWith("sales-")).map(s=>sourceLink(s,
+      (item.jury ? "Агрегат · " : "Строки «Продаж» · ")+(s.id==="sales-kes"?"Kaspersky":"Astra"))).join(" · ") +
       " · " + sourceLink(item.definition,"Определение индекса") : ""}
   </details>`;
 }
@@ -93,15 +89,15 @@ function openDeviation() {
   const relatedRuns = radarView.runs.filter(r=>r.mode==="release"&&deviationRef(r.filter)===deviationRef(f));
   return `<div class="wide radar-page">${state.data.store ? button("← Обзор магазина","funnel-back",overviewBack(f),"link") :
     button("← Воронка","funnel-back",deviationRef(f)+"~order","link")}
-    <p class="eyebrow">Самостоятельный заказ · ${esc(scope)}${item.coverage?.partial ? " · включает неполную неделю" : ""}</p>
+    <p class="eyebrow">Самостоятельный заказ · ${esc(scope)}${item.coverage?.partial ? " · включает неполную неделю" : ""}${item.jury ? " · агрегаты для жюри" : ""}</p>
     <h1>${esc(label)}</h1><p class="lede">Индекс BI ${number(i.before)} → ${number(i.after)}. В выгрузке индексы двух семейств.</p>
-    ${item.series && !item.run ? `<form class="row actions" id="radar-start-form" data-mode="release">
+    ${state.data.store && !item.run ? `<form class="row actions" id="radar-start-form" data-mode="release">
       <button class="primary">Исследовать Kaspersky с Qwen</button></form>` : ""}
-    ${messages()}${item.series && item.run ? projectResult(item.run) : ""}
+    ${messages()}${state.data.store && item.run ? projectResult(item.run) : ""}
     <section class="panel"><h2>Первичная сверка</h2>
       ${item.compare ? `<p>${esc(item.compare_name)} за те же недели · <strong>${signed(item.compare.change)}%</strong> (${number(item.compare.before)} → ${number(item.compare.after)}).</p>` : ""}
       <p>${esc(prettyDate(item.login).slice(0,5))} изменился вход, ${esc(prettyDate(item.released).slice(0,5))} выпущены фильтры подбора Kaspersky. Сопоставимость визитных долей через смену входа ограничена.</p>
-      ${relatedCard(item.related)}<p class="by">Для Kaspersky нет ряда добавлений из конфигуратора. Причина снижения заказов пока открыта.</p>
+      <p class="by">Для Kaspersky нет ряда добавлений из конфигуратора. Причина снижения заказов пока открыта.</p>
       ${item.reach ? `<p>Выбрали хотя бы одну опцию · ${ratio(item.reach)} визитов.
         Покрытие ${item.reach.rows} из ${item.reach.expected_rows} сочетаний день × устройство.</p>` : ""}
       ${item.reach_full && f.device === "all" ? `<p class="by">С запуска фильтров ${prettyDate(item.reach_full.since).slice(0,5)}
@@ -110,14 +106,14 @@ function openDeviation() {
     ${item.series ? chartSeries(item.series,item.events,item.filter) : ""}
     <section class="panel"><h2>Что ещё могло повлиять</h2>
       <ul class="radar-versions"><li><strong>Сбой пути.</strong> Проверить фактическое содержимое корзины после выбора. Сейчас ряда добавлений KES нет.
-        ${item.customer_evidence ? sourceLink(item.customer_evidence[3],"Контрпример · продление Cloud онлайн") : ""}</li>
+        ${item.customer_evidence?.[3] ? sourceLink(item.customer_evidence[3],"Контрпример · продление Cloud онлайн") : ""}</li>
         <li><strong>Потеря события.</strong> Возможна при работающей корзине. Пропуск Метрики сам по себе не объясняет снижение независимого индекса BI.
         ${item.cart_definition ? sourceLink(item.cart_definition,"Определение счётчика корзины") : ""}</li>
-        <li><strong>Переход к менеджеру.</strong> Покупатель описал этот сценарий. Для подтверждения сдвига нужны два ряда заказов за те же недели.
-        ${item.customer_evidence ? sourceLink(item.customer_evidence[0],"Интервью · канал покупки KES") : ""}</li></ul>
-      <p class="muted">Интервью и конкурентное исследование не подтверждают ни одну из этих причин для данного отклонения.</p>
+        <li><strong>Переход к менеджеру.</strong> Для подтверждения сдвига нужны два ряда заказов за те же недели.
+        ${item.customer_evidence?.[0] ? sourceLink(item.customer_evidence[0],"Интервью · канал покупки KES") : ""}</li></ul>
+      <p class="muted">${item.jury ? "Выборка жюри содержит согласованные агрегаты. Первичные интервью и замеры конкурентов доступны только в закрытом контуре." : "Интервью и конкурентное исследование не подтверждают ни одну из этих причин для данного отклонения."}</p>
     </section>
-    ${!item.series ? `<form class="recommend fields" id="radar-start-form" data-mode="release">
+    ${!state.data.store ? `<form class="recommend fields" id="radar-start-form" data-mode="release">
       <label>Уточнение к исследованию<textarea name="question" maxlength="220" placeholder="Необязательно"></textarea></label>
       <div class="row"><button class="primary">Проверить связь с релизом конфигуратора</button></div>
       ${messages()}
@@ -174,7 +170,7 @@ function workPage() {
 function resolutionView(result) {
   if (!result) return "";
   return `<section class="panel radar-resolution" id="finding-decision" tabindex="-1"><h2>Решение PM</h2>
-    <p><strong>${esc(decisionNames[result.kind])}${result.linked ? " · " + esc(result.linked) : ""}</strong></p>
+    <p><strong>${esc(result.legacy_link ? "Историческое решение сохранено" : decisionNames[result.kind])}${result.linked ? " · " + esc(result.linked) : ""}</strong></p>
     ${result.note ? `<p>${esc(result.note)}</p>` : ""}
     ${result.followup ? `<p class="by">Условие последующей проверки · ${esc(result.followup)}</p>` : ""}
     ${result.owner ? `<p class="by">Владелец · ${esc(result.owner)}. Вернуться ${prettyDate(result.due)}. Запись локальная.</p>` : ""}
@@ -208,8 +204,7 @@ function researchPage() {
     ${area("Условие последующей проверки", "followup", followup, 700, "required")}
     ${field("Комментарий PM", "note", "", 'maxlength="700"')}
     <div class="row">
-      ${item.related || item.candidate ? '<button class="primary" data-decision="link">Связать проверку с T-08</button>' : ""}
-      <button class="${item.related || item.candidate ? "secondary" : "primary"}" data-decision="new">Утвердить новую задачу</button>
+      <button class="primary" data-decision="new">Утвердить новую задачу</button>
       ${chip(state.data.tag)}
     </div>
   </form><details class="panel"><summary>Отложить</summary><form id="radar-defer" class="fields">
@@ -222,8 +217,6 @@ function researchPage() {
         <h3>${index===0 ? "Наблюдение" : "Ограничение"}</h3>${sourceCard(fact)}</div>`).join("")}</div>
       <p>${esc(item.confirmation)}</p>
       ${modelActions[item.recommended_check] ? `<p><strong>Первый шаг по модели</strong> · ${esc(modelActions[item.recommended_check])}</p>` : ""}
-      ${relatedCard(item.related)}
-      ${!item.related && item.candidate ? `<p class="by">Кандидат из первичной сверки</p>${relatedCard(item.candidate)}` : ""}
       <p class="by">${esc(item.historical_result)}</p>
       ${run.mode === "release" ? "<p>Если корзина работает, а событие пропадает, исправить учёт. Если сбой действия воспроизведён, оценить исправление или откат. При пробеле в доказательствах отложить решение до сверки.</p>" : ""}
       <details><summary>Фактический расход модели</summary>${usageSummary(item.usage)}</details>
@@ -287,8 +280,8 @@ function growthOperations(run) {
     <p class="by">Набор ${esc(run.corpus_version)} · запросы Qwen ранжируются с учётом исходного вопроса. Показаны первые совпадения.</p>
     <ol class="finding-operations">${run.operations.map(op => op.op === "search" ?
     `<li><strong>${esc(op.purpose)}</strong><p>«${esc(op.query)}» · ${esc(op.type)} · проверено ${op.searched}, ${op.fallback ?
-      "точных совпадений нет, просмотр группы" : "найдено"} ${op.hits.length ? op.hits.join(", ") : "0"}</p></li>` :
-    `<li><strong>Открыта запись ${esc(op.record.id)}</strong> · ${esc(op.record.version)}
+      "точных совпадений нет, просмотр группы" : "найдено"} ${esc((op.task_hits || op.hits).join(", ") || "0")}</p></li>` :
+    `<li><strong>Открыта запись ${esc(op.record.task_id || op.record.id)}</strong> · ${esc(op.record.version)}
       <div>${button(op.record.source, "fact", op.record.id, "link")}</div></li>`).join("")}</ol>
     </details>`;
 }

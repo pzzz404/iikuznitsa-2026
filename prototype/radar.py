@@ -42,19 +42,21 @@ def deviation(data, args, store=None):
         "filter": selected, "family": report["family_name"], "index": index,
         "weeks": funnel.WINDOWS[selected["before"]]["weeks"], "compare": report["orders"].get(compare),
         "compare_name": funnel.FAMILIES[compare], "scope": case["scope"], "source": funnel.ORDER_SOURCE,
-        "evidence": case["supports"] + case["limitations"], "related": case["candidate"], "case": case,
+        "evidence": case["supports"] + case["limitations"], "case": case,
         "login": report["login"], "released": report["released"], "jury": report["jury"],
     }
     if store:
         basis = [sales_basis(store, family, [funnel.WINDOWS[selected[k]] for k in ("before","after")])
                  for family in (selected["family"], compare)]
-        result.update(series=store["sales"][selected["family"]], coverage=report["coverage"],
+        result.update(coverage=report["coverage"],
                       events=[row for row in store["releases"] if row["title"] in ("R-08","R-09","R-10")],
                       reach=report["pairs"]["after"].get("cfg_reach_rate"),
                       reach_full=store.get("reach_full"),
                       definition=store["definitions"]["family_orders_idx"],
                       customer_evidence=store["interviews"],
                       cart_definition=store["definitions"]["cfg_add_to_cart_rate"])
+        if not store.get("demo"):
+            result["series"] = store["sales"][selected["family"]]
         result["evidence"].extend(basis + store["interviews"])
     return result
 
@@ -168,10 +170,49 @@ def worker(connect, daily_limit, corpus, store=None, mail=None, mail_wake=None):
 
 def public_run(row):
     data = json.loads(row["input"])
+    current_backlog_search = data.get("format") == store_research.MATCH_FORMAT and data.get("finding") == "kes"
     return {k: row[k] for k in ("id", "mode", "status", "created", "finished", "error", "seen", "subject")} | {
         "scope": data["scope"], "filter": data["filter"], "stage": data["stage"],
         "question": data.get("question"), "finding": data.get("finding"),
-        "resolution": json.loads(row["resolution"]) if row["resolution"] else None}
+        "backlog_search": current_backlog_search,
+        "resolution": saved_resolution(row["resolution"], current_backlog_search)}
+
+
+def saved_resolution(raw, verified):
+    if not raw:
+        return None
+    result = json.loads(raw)
+    if result.get("linked") and not verified:
+        result.update(linked=None, legacy_link=True)
+    return result
+
+
+def study_view(db, record, case, run_id, operations=None):
+    # Older runs contained a prefilled candidate. Keep the study and decision, without promoting that link.
+    record.pop("candidate", None)
+    record.pop("related", None)
+    if case.get("finding") != "kes" or case.get("format") != store_research.MATCH_FORMAT:
+        return record
+    proof = record.get("task_match") or {}
+    if proof.get("status") != "matched":
+        return record
+    if operations is None:
+        operations = [json.loads(row[0]) for row in db.execute(
+            "SELECT payload FROM radar_operations WHERE run=? ORDER BY id", (run_id,))]
+    for op in operations:
+        if op["op"] != "open":
+            continue
+        row = op["record"]
+        if (row["kind"] == "backlog"
+                and (row["id"], row["task_id"], row["source"], row["record"], row["version"], row["text"])
+                == tuple(proof.get(k) for k in ("record_id", "task_id", "source", "address", "version", "quote"))
+                and all((row.get("source_id"), row["record"], row["version"]))
+                and store_research.task_fit(row, case["scope"]["семейство"])):
+            record["related"] = {"id": row["task_id"], "record_id": row["id"], "title": row["title"],
+                                 "status": row["status"], "source": row["source"]}
+            return record
+    record["task_match"] = {"status": "none", "reason": "Адрес открытой задачи не удалось подтвердить."}
+    return record
 
 
 def recent(db):
@@ -187,9 +228,9 @@ def view_run(db, run_id, include_result=True):
     if not row:
         return None
     run = public_run(row)
+    case = json.loads(row["input"])
     run["mail"] = mail_outbox.status(db,run_id)
     if include_result and run["finding"]:
-        case = json.loads(row["input"])
         run["corpus_version"] = case["corpus_version"]
         if "known" in case:
             run["before"] = {"known": case["known"], "coverage": case["coverage"]}
@@ -199,7 +240,9 @@ def view_run(db, run_id, include_result=True):
         run["usage"] = usage_sum(run["calls"])
     if include_result and row["status"] == "done":
         study = db.execute("SELECT payload FROM studies WHERE id=?", (row["study"],)).fetchone()
-        run["result"] = json.loads(study[0])
+        run["result"] = study_view(db, json.loads(study[0]), case, run_id, run.get("operations"))
+        if run["resolution"] and run["resolution"].get("linked") != (run["result"].get("related") or {}).get("id"):
+            run["resolution"]["linked"] = None
         run["result"]["calls"] = usage_for(db, row["study"])
         run["result"]["usage"] = usage_sum(run["result"]["calls"])
     return run
@@ -211,8 +254,9 @@ def project_run(db, key, filters, ref=None, summary=False):
     if not ref:
         row = db.execute("""SELECT id FROM radar_runs WHERE subject=?
                             AND json_extract(input,'$.finding')=?
+                            AND (? != 'kes' OR json_extract(input,'$.format')=?)
                             ORDER BY (status='done') DESC, created DESC LIMIT 1""",
-                         (subject,key)).fetchone()
+                         (subject,key,key,store_research.MATCH_FORMAT)).fetchone()
         ref = row["id"] if row else None
     run = view_run(db, ref, include_result=not summary) if ref else None
     if ref and (not run or run["finding"] != key or run["filter"] != filters):
@@ -276,7 +320,7 @@ def resolve(db, args, save_task):
                 raise ValueError("Укажите дату возврата к проверке") from exc
             resolution.update(owner=owner.strip(), due=due, method=result["assessment"]["check"])
         if kind == "link":
-            related = result.get("related") or result.get("candidate")
+            related = result.get("related")
             if not related:
                 raise ValueError("В источниках нет подходящей задачи для связи")
             resolution["linked"] = related["id"]

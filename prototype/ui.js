@@ -301,7 +301,10 @@ function usagePage() {
 
 function render() {
   if (!state.data) return;
-  document.querySelector("#sample-note").hidden = !state.data.demo_store;
+  const sampleNote = document.querySelector("#sample-note");
+  sampleNote.hidden = !state.data.demo_store;
+  if (state.data.store?.demo) sampleNote.textContent =
+    "Стенд жюри · согласованные агрегаты BI и веб-аналитики. Остальные материалы и бэклог — учебные.";
   const [page, id] = route();
   if (page==="funnel") restoreFunnelView(id);
   nav.querySelector('[data-page="funnel"]').textContent = state.data.store ? "Обзор магазина" : "Воронка";
@@ -387,25 +390,6 @@ document.addEventListener("click", async event => {
     render();
   }
   if (d.funnelStudy !== undefined) void runFunnelStudy();
-  if (d.radarRelated) {
-    const detail = detailForRoute();
-    const item = detail?.related || detail?.result?.related || detail?.result?.candidate;
-    if (item?.id === d.radarRelated) {
-      const original=state.data.store?.tasks.find(t=>t.id===item.id);
-      const amendments=state.data.tasks.filter(task=>task.radar?.linked===item.id);
-      dialogBody.innerHTML = `<h2>${esc(item.id)} · ${esc(item.title)}</h2><p>${esc(item.status)}</p>
-        <p>${esc(original?.text || "")}</p><p class="by">${esc(original?.source || "Softline v17 · Бэклог_задачи")}</p>
-        ${amendments.length ? '<h3>Локальные дополнения</h3>'+amendments.map(t=>button(taskLabel(t.id)+" · "+t.title,"task",t.id,"link")).join("") : ""}`;
-      dialog.showModal();
-    }
-  }
-  if (d.related) {
-    const item = currentStudy()?.related;
-    if (item?.id === d.related) {
-      dialogBody.innerHTML = `<h2>${esc(item.id)} · ${esc(item.title)}</h2><p>${esc(item.status)}</p><p class="by">Softline v17 · Бэклог_задачи</p>`;
-      dialog.showModal();
-    }
-  }
   if (d.topic && !state.waiting) {
     Object.assign(state, {topic: d.topic, question: state.data.topics[d.topic].question, study: null, error: "", notice: ""});
     render();

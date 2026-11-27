@@ -77,6 +77,10 @@ def setup():
         FUNNEL = funnel.load_history()
     CRM = cohort_balances(json.loads((ROOT / "demo/crm/synthetic_sales.json").read_text()))
     STORE = json.loads(Path(STORE_FILE).read_text()) if STORE_FILE and FUNNEL and not openrouter.ENABLED else None
+    if os.getenv("PM_JURY_AGGREGATES_ONLY") == "1" and not (
+            INVITES and STORE and STORE.get("demo") is True and STORE["history"].get("jury") is True
+            and not os.getenv("PM_RESEARCH_FILE")):
+        raise RuntimeError("Для публичного стенда нужны согласованные агрегаты и учебные записи.")
     if STORE:
         FUNNEL = STORE["history"]
         IMPORTED = [{"task_id":row["id"], "title":row["title"], "status":row["status"]} for row in STORE["tasks"]]
@@ -121,9 +125,15 @@ def task_details(db, row):
     if is_funnel and FUNNEL:
         detail = db.execute("SELECT id,mode,input,resolution FROM radar_runs WHERE study=? AND resolution IS NOT NULL", (task["study"],)).fetchone()
         if detail:
+            case = json.loads(detail["input"])
+            record = radar.study_view(db, record, case, detail["id"])
             task["radar"] = {"id": detail["id"], "mode": detail["mode"], "finding": record.get("finding"),
-                             "filter": json.loads(detail["input"])["filter"],
-                             **json.loads(detail["resolution"])}
+                             "filter": case["filter"], **radar.saved_resolution(detail["resolution"], bool(record.get("related")))}
+            if task["radar"].get("linked") != (record.get("related") or {}).get("id"):
+                task["radar"]["linked"] = None
+        else:
+            record.pop("related", None)
+            record.pop("candidate", None)
     return task
 
 
@@ -277,7 +287,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "catalog": radar.CATALOG if FUNNEL else {},
                                    "growth": growth_research.finding(RESEARCH_CORPUS) if FUNNEL else None,
                                    "store": ({k: STORE[k] for k in ("catalog","coverage","threshold","alerts","releases",
-                                             "definitions","tasks","initiatives","lk")} if STORE else None),
+                                             "definitions","tasks","initiatives","lk")} |
+                                             {"demo": bool(STORE.get("demo"))} if STORE else None),
                                    "event_results": EVENT_RESULTS,
                                    "today": date.today().isoformat()})
         if path == "/api/funnel" and FUNNEL:

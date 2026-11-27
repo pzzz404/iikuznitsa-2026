@@ -106,12 +106,10 @@ def load_history():
                             values.update(option_rows.get((group, day), {}))
                         if values:
                             option_counts[key][group] = dict(values.most_common())
-        task = next(row for row in read_rows(book["Бэклог_задачи"]) if row["task_id"] == "T-08")
         releases = {r["release_id"]: str(r["release_date"])[:10] for r in read_rows(book["Релизы"])}
         return {"orders": orders, "ratios": ratios, "steps": steps, "series": series, "visits": visits,
                 "option_counts": option_counts, "released": releases["R-09"],
-                "login": releases["R-08"], "task": {"id": task["task_id"], "title": task["title"],
-                                                    "status": task["status"]}, "jury": False}
+                "login": releases["R-08"], "jury": False}
     finally:
         book.close()
 
@@ -151,8 +149,7 @@ def jury_aggregates(history):
                 "kes": {"oct": {"cfg_reach_rate": {"all": history["ratios"]["kes"]["oct"]["cfg_reach_rate"]["all"]}}},
                 "astra": {"oct": {"cfg_add_to_cart_rate": {"all": history["ratios"]["astra"]["oct"]["cfg_add_to_cart_rate"]["all"]}}},
             },
-            "visits": {"astra": {key: {"desktop": history["visits"]["astra"][key]["desktop"]} for key in ("oct12","oct19")}},
-            "task": {"id": "T-08", "title": "Проверить передачу событий электронной торговли", "status": "Открыта"}}
+            "visits": {"astra": {key: {"desktop": history["visits"]["astra"][key]["desktop"]} for key in ("oct12","oct19")}}}
 
 
 def options(data):
@@ -233,7 +230,6 @@ def study_case(data, args):
     chosen = r["orders"].get(f["family"])
     values = (f"{chosen['before']:.1f} → {chosen['after']:.1f} ({chosen['change']:+.1f}%)."
               if chosen else r["orders_gap"])
-    related = data["task"] if f["family"] == "kes" and stage in {"cart", "order"} else None
     measurement = r["pairs"].get("after", {}).get("cfg_add_to_cart_rate")
     measured_cart = (f"{measurement['n']} визитов с добавлением из {measurement['d']} визитов с открытием."
                      if measurement and measurement["rows"] == measurement["expected_rows"] else
@@ -290,7 +286,7 @@ def study_case(data, args):
     scope = {"этап": STAGES[stage], "семейство": r["family_name"], "устройство": DEVICES[f["device"]],
              "аудитория": AUDIENCES[f["audience"]], "периоды": [WINDOWS[f[k]]["label"] for k in ("before", "after")]}
     return {"filter": f, "stage": stage, "scope": scope, "action": action, "criterion": criterion,
-            "supports": supports, "limitations": limitations, "candidate": related,
+            "supports": supports, "limitations": limitations,
             "confirmation": NO_CONFIRMATION if f["family"] == "kes" else
             "В интервью и конкурентном анализе нет подтверждения причины для этого среза.",
             "historical_result": historical}

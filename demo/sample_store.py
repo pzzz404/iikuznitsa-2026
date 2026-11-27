@@ -67,7 +67,8 @@ def build():
         "Бэклог",
         1,
         "Проверить передачу события корзины",
-        "Сопоставить выбранную лицензию, корзину и событие.",
+        "В учебном бэклоге есть ошибка передачи событий электронной торговли из подбора Kaspersky. "
+        "Проверить, записывается ли событие добавления после успешного пополнения корзины.",
         "backlog",
     )
     task.update(
@@ -76,11 +77,17 @@ def build():
         status="Открыта",
         priority="Средний",
         metrics="cfg_add_to_cart_rate",
-        releases=["R-09"],
+        releases=[],
     )
+    navigation = source(
+        "Бэклог", 2, "Обновить навигацию личного кабинета",
+        "В шапке личного кабинета есть ссылки на поиск товаров, избранное и корзину магазина.",
+        "backlog",
+    )
+    navigation.update(source_id=navigation["id"], id="T-06", status="Готово")
     releases = [
         source(
-            "Релизы", i, name, text, "release", date=day, metrics="cfg", related="T-08"
+            "Релизы", i, name, text, "release", date=day, metrics="cfg"
         )
         for i, (name, text, day) in enumerate(
             [
@@ -119,7 +126,6 @@ def build():
         jury=False,
         released=releases[1]["date"],
         login=releases[0]["date"],
-        task={k: task[k] for k in ("id", "title", "status")},
     )
     catalog = {}
     names = {
@@ -195,7 +201,7 @@ def build():
         synthetic=True,
         history=history,
         sales=sales,
-        tasks=[task],
+        tasks=[task, navigation],
         releases=releases,
         definitions=definitions,
         coverage=dict(
@@ -238,6 +244,29 @@ def build():
         book=BOOK,
         version=VERSION,
     )
+
+
+def build_jury(aggregates):
+    """Combine explicitly approved Funnel totals with authored demonstration records."""
+    history = aggregates["funnel"]
+    if history.get("jury") is not True:
+        raise ValueError("Нужен согласованный файл агрегатов жюри.")
+    sample = build()
+    sample.update(
+        demo=True,
+        history={key: history[key] for key in ("jury", "released", "login", "orders", "steps", "ratios", "visits")},
+        sales={"kes": [], "astra": []},
+        alerts={"kes": [], "astra": []},
+    )
+    sample["releases"].clear()
+    for key, title, wording in (
+        ("login", "R-08", "Изменение механизма входа ограничивает сравнение визитных долей."),
+        ("released", "R-09", "Вышло обновление фильтров подбора Kaspersky. Само совпадение дат не устанавливает причину."),
+    ):
+        row = source("Хронология", title, title, wording, "release", date=history[key], metrics="cfg")
+        row.update(source="Согласованные агрегаты для жюри · " + title, version="jury-aggregates")
+        sample["releases"].append(row)
+    return sample
 
 
 if __name__ == "__main__":

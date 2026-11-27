@@ -16,6 +16,7 @@ function storeFacts() {
 }
 
 function coverageCaption(store) {
+  if (store.demo) return "Демо жюри · согласованные агрегаты и учебный бэклог";
   const c = store.coverage;
   return "BI по " + prettyDate(c.sales_to) + " · полная неделя до " + prettyDate(c.last_full) + " · веб-аналитика по " + prettyDate(c.metrics_to);
 }
@@ -65,7 +66,7 @@ function updateOverviewResearch() {
   const report=funnelView.report;
   if (!report?.storeData) return;
   const ref=deviationRef({...report.filter,family:"kes"});
-  const matches=radarView.runs.filter(run=>run.finding==="kes" && deviationRef(run.filter)===ref);
+  const matches=radarView.runs.filter(run=>run.backlog_search && deviationRef(run.filter)===ref);
   const existing=report.storeData.kesRun;
   const pool=existing && !matches.some(run=>run.id===existing.id) ? [...matches,existing] : matches;
   const run=pool.sort((a,b)=>Number(b.status==="done")-Number(a.status==="done") ||
@@ -99,13 +100,17 @@ function overviewRows(report) {
     rows.push({product:"astra",stage:"order",label:"Astra",signal:"Индекс самостоятельных заказов "+signed(astra.change)+"%",
       scope:dates+" · "+number(astra.before)+" → "+number(astra.after),
       className:astra.change<0?"down":"",cta:button("Разобрать выбранные недели","astra",astraRef("comparison",before,after),"secondary")});
+  } else if (astra && store.demo && options.oct12 && options.oct19) {
+    rows.push({product:"astra",stage:"order",label:"Astra",signal:"Индекс самостоятельных заказов "+signed(astra.change)+"%",
+      scope:dates+" · "+number(astra.before)+" → "+number(astra.after),
+      className:astra.change<0?"down":"",cta:button("Открыть октябрьские замеры подбора","astra",astraRef("comparison","oct12","oct19"),"link")});
   }
   const kes=report.orders.kes;
   if (kes) {
     const filters={...report.filter,family:"kes"};
     const run=report.storeData.kesRun;
     const done=run?.status==="done";
-    const action=done ? (run.resolution ? "Открыть решение по T-08" : "Открыть вывод по T-08") :
+    const action=done ? (run.resolution ? "Открыть решение" : "Открыть вывод Qwen") :
       run && ["queued","running"].includes(run.status) ? "Открыть ход исследования" : "Открыть отклонение";
     const progress=done ? (run.resolution ? "Решение сохранено" : "Вывод готов к решению") :
       run ? radarStates[run.status] : "Исследование не запускалось для этого периода";
@@ -118,7 +123,7 @@ function overviewRows(report) {
   if (measured && within(measured)) {
     rows.push({product:"office",stage:"license",label:office.title,
       signal:`${office.prices.below_store} из ${office.prices.matched.length} сопоставимых предложений дешевле Store`,
-      scope:"Замер "+new Intl.DateTimeFormat("ru-RU",{day:"numeric",month:"long",timeZone:"UTC"}).format(new Date(measured)),
+      scope:(store.demo?"Учебный замер ":"Замер ")+new Intl.DateTimeFormat("ru-RU",{day:"numeric",month:"long",timeZone:"UTC"}).format(new Date(measured)),
       className:"down",cta:button("Сверить цены","office-prices","office","secondary")});
   }
   return rows;
@@ -145,7 +150,7 @@ function showOverview() {
           ${selectField("Второй период","after",periodOptions(model,"after",f),f.after,locked)}
           ${selectField("Устройство","device",model.devices,f.device,locked)}
           ${selectField("Покупатели","audience",model.audiences,f.audience,locked)}
-          ${!model.windows[f.after].mate ? `<label class="toggle"><input name="full_weeks" type="checkbox"
+          ${model.windows.oct_partial && !model.windows[f.after].mate ? `<label class="toggle"><input name="full_weeks" type="checkbox"
             ${f.after==="oct_partial"?"":"checked"} ${locked}>Только полные недели</label>` : ""}
         </form>
       </details></div>`;
@@ -257,14 +262,26 @@ function projectResult(run) {
       return `<article><h3>${i?"Что ограничивает вывод":"Основание проверки"}</h3><p>${esc(fact.text)}</p>
         ${sourceLink(fact, "Открыть основание · " + fact.title)}</article>`;
     }).join("")}</div>
+    ${run.finding === "kes" ? taskMatch(item) : ""}
     <p class="by">${esc(item.historical_result)}</p>
     <div id="project-mail-status">${projectMail(run.mail)}</div>
     ${run.finding === "kes" ? `<details><summary>Как результат изменит решение</summary>
       <p>Повторяется сбой действия — воспроизвести на проблемной конфигурации и оценить откат.</p>
-      <p>Действие работает, запись теряется — уточнить T-08 и проверить телеметрию.</p>
+      <p>Действие работает, запись теряется — проверить телеметрию.</p>
       <p>Заказы сместились к менеджеру — сверить общий ряд и проверить доступность самостоятельной закупки.</p></details>` : ""}
     <details><summary>Прочитанные записи</summary><div class="grid">${item.evidence.map(sourceCard).join("")}</div></details>
     </section>${growthCost(run)}${growthOperations(run)}${projectDecision(run)}`;
+}
+
+function taskMatch(item) {
+  const match = item.task_match;
+  if (!match) return '<p class="by">В историческом прогоне связь с бэклогом отдельно не проверялась.</p>';
+  if (!item.related) return `<div class="radar-related"><strong>Подходящая задача не найдена</strong>
+    <p>${esc(match.reason)}</p></div>`;
+  return `<div class="radar-related"><strong>Задача, которую нашла Qwen</strong>
+    ${button(item.related.id + " · " + item.related.title, "fact", item.related.record_id, "link")}
+    <p>${esc(match.reason)}</p><blockquote>${esc(match.quote)}</blockquote>
+    <p class="by">${esc(match.source)} · ${esc(match.version)}</p></div>`;
 }
 
 function projectMail(mail) {
@@ -299,7 +316,7 @@ function projectDecision(run) {
       </div>
       ${field("Комментарий PM","note","",'maxlength="700"')}
       <div class="row">
-        ${item.related ? '<button class="primary" data-decision="link">Дополнить T-08</button>' : ""}
+        ${item.related ? `<button class="primary" data-decision="link">Дополнить ${esc(item.related.id)}</button>` : ""}
         <button class="${item.related?"secondary":"primary"}" data-decision="new">Создать задачу</button>
       </div>
     </form>
