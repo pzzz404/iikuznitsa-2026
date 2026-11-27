@@ -99,7 +99,8 @@ function projectResult(run) {
     <p class="lede">${esc(item.action)}</p>
     <div class="grid finding-evidence">${item.selected.map((id,i)=>{
       const fact=facts.get(id);
-      return `<article><h3>${i?"Что ограничивает вывод":"Основание проверки"}</h3><p>${esc(fact.text)}</p>${sourceLink(fact)}</article>`;
+      return `<article><h3>${i?"Что ограничивает вывод":"Основание проверки"}</h3><p>${esc(fact.text)}</p>
+        ${sourceLink(fact, "Открыть основание · " + fact.title)}</article>`;
     }).join("")}</div>
     <p class="by">${esc(item.historical_result)}</p>
     ${run.finding === "kes" ? `<details><summary>Как результат изменит решение</summary>
