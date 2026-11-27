@@ -13,8 +13,10 @@ FAMILIES = {"kes": "Kaspersky", "astra": "Astra"}
 PRODUCTS = {"kes": "Конфигуратор Kaspersky", "astra": "Конфигуратор Астра"}
 SALES_NAMES = {"Kaspersky Endpoint Security": "kes", "Astra Linux Special Edition": "astra"}
 WINDOWS = {
+    "summer": {"start": "2026-06-29", "weeks": 13, "label": "29.06–27.09", "slot": "before"},
     "aug": {"start": "2026-08-17", "weeks": 6, "label": "17.08–27.09", "slot": "before"},
     "oct": {"start": "2026-10-05", "weeks": 6, "label": "05.10–15.11", "slot": "after"},
+    "oct_partial": {"start": "2026-10-05", "weeks": 7, "label": "05.10–22.11", "slot": "after", "partial": True},
     "oct12": {"start": "2026-10-12", "weeks": 1, "label": "12–18.10", "slot": "before"},
     "oct19": {"start": "2026-10-19", "weeks": 1, "label": "19–25.10", "slot": "after"},
 }
@@ -150,7 +152,8 @@ def jury_aggregates(history):
 def options(data):
     if data is None:
         return None
-    return {"families": FAMILIES, "windows": WINDOWS, "defaults": DEFAULTS, "devices": DEVICES,
+    available = {key: window for key, window in WINDOWS.items() if not data["jury"] or key in ("aug","oct","oct12","oct19")}
+    return {"families": FAMILIES, "windows": available, "defaults": DEFAULTS, "devices": DEVICES,
             "audiences": {k: AUDIENCES[k] for k in ("all", "regular", "verified")}}
 
 
@@ -161,8 +164,8 @@ def selection(args):
         if not isinstance(values[key], str) or values[key] not in choices:
             raise ValueError("Проверьте параметры воронки")
     before, after = WINDOWS[values["before"]], WINDOWS[values["after"]]
-    if before["slot"] != "before" or after["slot"] != "after" or before["weeks"] != after["weeks"]:
-        raise ValueError("Выберите два последовательных периода одинаковой длины")
+    if before["slot"] != "before" or after["slot"] != "after" or ((values["before"] == "oct12") != (values["after"] == "oct19")):
+        raise ValueError("Выберите два окна вокруг релиза или две октябрьские недели.")
     return values
 
 
@@ -192,6 +195,9 @@ def report(data, args):
              "after": data["steps"].get(after, []) if show_steps else []}
     visits = data.get("visits", {}).get(family, {}) if not audience_gap else {}
     series = data.get("series", {}).get(family, {}) if orders else {}
+    coverage = {"before": WINDOWS[before]["weeks"] if orders.get(family) else 0,
+                "after": WINDOWS[after]["weeks"] if orders.get(family) else 0,
+                "partial": bool(WINDOWS[after].get("partial"))}
     missing_orders = (audience_gap or ("В BI v17 нет поля устройства." if device != "all" else
                       ("Для этих недель нет разрешённого индекса в демовыборке." if data["jury"] else
                        "Для сравнения нужны индексы всех недель в каждом периоде.")))
@@ -199,7 +205,7 @@ def report(data, args):
         "Для этого среза нет агрегата «открытие → корзина»." if data["jury"] else
         "В выбранном срезе нет пары счётчиков добавлений и открытий.")
     return {"filter": params, "family_name": FAMILIES[family], "jury": data["jury"],
-            "orders": orders, "pairs": pairs, "steps": steps, "audience_gap": audience_gap,
+            "orders": orders, "pairs": pairs, "steps": steps, "audience_gap": audience_gap, "coverage": coverage,
             "visits": {"before": {} if tracking_break else visits.get(before, {}), "after": visits.get(after, {})},
             "series": {"before": series.get(before, []), "after": series.get(after, [])},
             "options": data.get("option_counts", {}).get(after, {}) if family=="kes" and device=="all" and not audience_gap else {},
