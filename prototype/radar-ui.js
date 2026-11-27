@@ -26,8 +26,9 @@ function radarDetailPath(page, ref) {
   if (page === "research") return "radar/run?" + new URLSearchParams({id:ref});
   if (page === "astra") {
     if (!ref || !state.data.store) return "funnel?family=astra&before=oct12&after=oct19";
-    const [finding,...pieces]=ref.split(".");
-    return "radar/astra?" + new URLSearchParams({finding,...deviationArgs(pieces.join("."))});
+    const [scope,run]=ref.split("~");
+    const [finding,...pieces]=scope.split(".");
+    return "radar/astra?" + new URLSearchParams({finding,...deviationArgs(pieces.join(".")),...(run ? {run} : {})});
   }
   if (page === "growth" && ref?.split("~")[0] === state.data.growth.key)
     return "radar/finding?" + new URLSearchParams({id:ref.split("~")[1] || ""});
@@ -72,7 +73,8 @@ function auditInfo(item) {
         (item.coverage.partial ? ", последняя неполная." : ", полные окна.") : "В каждом окне " + item.weeks + " полных недель."}
       Среднее недельных индексов. Для каждого семейства база 100 — 04.05–28.06.2026.</p>
     <p class="muted">Индекс не содержит абсолютных заказов, оплат или рублей. Для общего индекса магазина нужны веса по базовым объёмам.</p>
-    <p class="by">${esc(item.source)}. ${item.jury ? "Покрытие демо включает согласованные агрегаты." : "Покрытие исходной книги: два семейства."}</p>
+    <p class="by">${esc(item.source)}. ${item.synthetic ? "Учебные ряды по двум семействам." :
+        item.jury ? "Покрытие демо включает согласованные агрегаты." : "Покрытие исходной книги: два семейства."}</p>
     ${item.definition ? item.evidence.filter(s=>s.id.startsWith("sales-")).map(s=>sourceLink(s,
       (item.jury ? "Агрегат · " : "Строки «Продаж» · ")+(s.id==="sales-kes"?"Kaspersky":"Astra"))).join(" · ") +
       " · " + sourceLink(item.definition,"Определение индекса") : ""}
@@ -87,12 +89,15 @@ function openDeviation() {
   const label = `Самостоятельные заказы ${item.family} ${i.change < 0 ? "↓" : "↑"} ${number(Math.abs(i.change))}%`;
   const scope = item.scope["периоды"].join(" и ");
   const relatedRuns = radarView.runs.filter(r=>r.mode==="release"&&deviationRef(r.filter)===deviationRef(f));
+  const readyToStart = !state.data.cloud_research || deviationRef(f) === deviationRef(state.data.funnel.defaults);
   return `<div class="wide radar-page">${state.data.store ? button("← Обзор магазина","funnel-back",overviewBack(f),"link") :
     button("← Воронка","funnel-back",deviationRef(f)+"~order","link")}
     <p class="eyebrow">Самостоятельный заказ · ${esc(scope)}${item.coverage?.partial ? " · включает неполную неделю" : ""}${item.jury ? " · агрегаты для жюри" : ""}</p>
     <h1>${esc(label)}</h1><p class="lede">Индекс BI ${number(i.before)} → ${number(i.after)}. В выгрузке индексы двух семейств.</p>
-    ${state.data.store && !item.run ? `<form class="row actions" id="radar-start-form" data-mode="release">
+    ${state.data.cloud_research && readyToStart ? cloudRunButton("release",item.run) :
+      state.data.store && !item.run && readyToStart ? `<form class="row actions" id="radar-start-form" data-mode="release">
       <button class="primary">Исследовать Kaspersky с Qwen</button></form>` : ""}
+    ${!readyToStart ? '<p class="note">Облачное исследование доступно для исходных двух шестинедельных окон.</p>' : ""}
     ${messages()}${state.data.store && item.run ? projectResult(item.run) : ""}
     <section class="panel"><h2>Первичная сверка</h2>
       ${item.compare ? `<p>${esc(item.compare_name)} за те же недели · <strong>${signed(item.compare.change)}%</strong> (${number(item.compare.before)} → ${number(item.compare.after)}).</p>` : ""}
@@ -260,16 +265,21 @@ function growthDecision(run) {
 
 function growthCost(run) {
   if (!run.calls.length) return "";
-  const first = run.calls[0];
-  return `<details class="panel"><summary>Расход исследования · ${number(run.usage.prompt + run.usage.completion)} токенов</summary>
+  const first = run.calls[0], cloud = first.platform === "OpenRouter";
+  return `<details class="panel" id="study-cost"><summary>Расход исследования · ${number(run.usage.prompt + run.usage.completion)} токенов</summary>
     <p><strong>${esc(first.model)}</strong> · ${esc(first.platform)} · ID ${esc(run.id)}</p>
     ${usageSummary(run.usage)}
-    <p class="by">Локальная плата за API · 0 RUB. Электричество и амортизация сервера отдельно, замера нет.
-      OpenRouter qwen/qwen3-32b · замер не выполнен. Токены Codex относятся к разработке.</p>
-    <div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Вход</th><th>Выход</th><th>Время</th><th>Статус</th></tr></thead>
+    <p class="by">${cloud ? "Суммы по квитанциям OpenRouter в USD." :
+      "Локальная плата за API · 0 RUB. Электричество и амортизация сервера отдельно, замера нет."}
+      Токены Codex относятся к разработке.</p>
+    <div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Вход</th><th>Выход</th><th>Время</th>
+      ${cloud ? "<th>Списано, USD</th><th>Квитанция</th>" : ""}<th>Статус</th></tr></thead>
     <tbody>${run.calls.map(c => `<tr><td>#${c.id} · ${esc(c.scenario.split(" · ").at(-1))}</td>
       <td>${c.prompt_tokens ?? "—"}</td><td>${c.completion_tokens ?? "—"}</td>
-      <td>${c.elapsed_ms === null ? "—" : seconds(c.elapsed_ms)}</td><td>${esc(callStatus[c.status])}</td></tr>`).join("")}</tbody></table></div>
+      <td>${c.elapsed_ms === null ? "—" : seconds(c.elapsed_ms)}</td>
+      ${cloud ? `<td>${esc(c.actual_cost ?? "Ожидаем")}</td><td>${esc(c.receipt || "—")} · ${esc(c.upstream || "—")}
+        ${c.generation ? `<small class="by" title="${esc(c.generation)}">${esc(c.generation)}</small>` : ""}</td>` : ""}
+      <td>${esc(callStatus[c.status])}</td></tr>`).join("")}</tbody></table></div>
     ${button("Открыть журнал модели", "page", "usage", "link")}
   </details>`;
 }
@@ -277,7 +287,9 @@ function growthCost(run) {
 function growthOperations(run) {
   if (!run.operations.length) return "";
   return `<details class="panel"><summary>Что искала и читала Qwen · ${run.operations.length} операций</summary>
-    <p class="by">Набор ${esc(run.corpus_version)} · запросы Qwen ранжируются с учётом исходного вопроса. Показаны первые совпадения.</p>
+    <p class="by">Набор ${esc(run.corpus_version)} · ${run.provider === "OpenRouter" ?
+      "Qwen выбирает источники по каталогу и сопоставляет прочитанные описания задач." :
+      "Запросы Qwen ранжируются с учётом исходного вопроса. Показаны первые совпадения."}</p>
     <ol class="finding-operations">${run.operations.map(op => op.op === "search" ?
     `<li><strong>${esc(op.purpose)}</strong><p>«${esc(op.query)}» · ${esc(op.type)} · проверено ${op.searched}, ${op.fallback ?
       "точных совпадений нет, просмотр группы" : "найдено"} ${esc((op.task_hits || op.hits).join(", ") || "0")}</p></li>` :
@@ -442,7 +454,7 @@ async function pollRadar() {
     }
     if (page==="research" && current && detailForRoute()?.status!==current.status)
       void loadRadarDetail(radarDetailPath(page,id), true);
-    if (["growth","deviation","catalog"].includes(page) && activeRun && current && (activeRun.status !== current.status ||
+    if (["growth","deviation","catalog","astra"].includes(page) && activeRun && current && (activeRun.status !== current.status ||
         (["queued","running"].includes(activeRun.status) && current.operation_count !== undefined &&
           activeRun.operations.length !== current.operation_count && !dialog.open)))
       void loadRadarDetail(radarDetailPath(page,id), true);
@@ -457,6 +469,7 @@ async function openRun(id, run=radarView.runs.find(item=>item.id===id)) {
     const from=overviewNavigation();
     if (run.finding === "kes") go("deviation", deviationRef(run.filter)+"~"+id, from);
     else if (run.finding === "office") go("catalog","office~"+id,from);
+    else if (run.finding === "astra") go("astra","below90."+deviationRef(run.filter)+"~"+id,from);
     else if (run.finding) go("growth", findingRef(id));
     else go("research",id);
     await api("radar/seen",{id});
@@ -476,5 +489,5 @@ async function retryRadar() {
   const run = info?.run || info;
   if (!run || run.status!=="failed") return;
   const question = run.question?.split(" Уточнение PM: ").slice(1).join(" Уточнение PM: ") || "";
-  await startRadar({...run.filter,mode:run.mode,stage:run.stage,question});
+  await startRadar({...run.filter,mode:run.mode,...(state.data.cloud_research ? {previous:run.id} : {stage:run.stage,question})});
 }

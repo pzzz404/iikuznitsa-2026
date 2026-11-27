@@ -303,7 +303,9 @@ function render() {
   if (!state.data) return;
   const sampleNote = document.querySelector("#sample-note");
   sampleNote.hidden = !state.data.demo_store;
-  if (state.data.store?.demo) sampleNote.textContent =
+  if (state.data.cloud_research) sampleNote.textContent =
+    "Учебный набор · показатели, интервью и бэклог вымышлены. Исследование выполняет Qwen3‑32B через OpenRouter.";
+  else if (state.data.store?.demo) sampleNote.textContent =
     "Стенд жюри · согласованные агрегаты BI и веб-аналитики. Остальные материалы и бэклог — учебные.";
   const [page, id] = route();
   if (page==="funnel") restoreFunnelView(id);
@@ -429,7 +431,10 @@ app.addEventListener("submit", async event => {
   submit.disabled = true;
   state.error = state.notice = "";
   try {
-    if (form.id === "radar-start-form") {
+    if (form.id === "cloud-run-form") {
+      await startRadar({...detailForRoute().filter,mode:form.dataset.mode,
+        ...(form.dataset.previous ? {previous:form.dataset.previous} : {})});
+    } else if (form.id === "radar-start-form") {
       await startRadar({...detailForRoute().filter, mode:form.dataset.mode, question:fields.question});
     } else if (form.id === "radar-growth-form") {
       await startRadar({mode:"growth", question:fields.question || ""});

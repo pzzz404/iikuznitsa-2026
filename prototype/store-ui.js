@@ -16,6 +16,7 @@ function storeFacts() {
 }
 
 function coverageCaption(store) {
+  if (state.data.cloud_research) return "Учебные продажи и метрики";
   if (store.demo) return "Демо жюри · согласованные агрегаты и учебный бэклог";
   const c = store.coverage;
   return "BI по " + prettyDate(c.sales_to) + " · полная неделя до " + prettyDate(c.last_full) + " · веб-аналитика по " + prettyDate(c.metrics_to);
@@ -188,6 +189,13 @@ function showOverview() {
     ${storeIndicators()}</div>`;
 }
 
+function cloudRunButton(mode, run) {
+  if (run && run.status !== "done") return "";
+  return `<form id="cloud-run-form" class="row actions" data-mode="${mode}" data-previous="${esc(run?.id || "")}">
+    <button class="${run ? "secondary" : "primary"}">${run ? "Запустить новый разбор Qwen3‑32B" : "Исследовать с Qwen3‑32B"}</button>
+  </form>`;
+}
+
 function astraDiagnostic(data) {
   const {before,after}=data.periods;
   const labels=state.data.funnel.windows;
@@ -208,7 +216,7 @@ function astraDiagnostic(data) {
   const hypothesis=isAlert ? "Проверить переход от итога подбора к добавлению в корзину на компьютере." :
     "Сверить, как меняются прохождение подбора и добавления в выбранных неделях.";
   return `<div class="wide radar-page">${button("← Обзор магазина","funnel-back",overviewBack(data.filter),"link")}
-    <p class="eyebrow">Astra Linux Special Edition · недели ${before.label} и ${after.label}</p>
+    <p class="eyebrow">${esc(state.data.store.catalog.astra.title)} · недели ${before.label} и ${after.label}</p>
     <h1>Astra · ${range} 2026</h1>
     <p class="lede">${isAlert ? `Две недели ниже порога ${data.threshold} · индекс ${before.index} → ${after.index}` :
       `Индекс самостоятельных заказов ${before.index ?? "—"} → ${after.index ?? "—"}`}</p>
@@ -221,13 +229,14 @@ function astraDiagnostic(data) {
       <p class="by">${evidence("sales-astra","Строки «Продаж»")} ·
         ${evidence(state.data.store.definitions.family_orders_idx.id,"Правило порога в справочнике")}</p>
     </section>
-    <form id="radar-astra-form" class="panel" data-stage="${isAlert?"cart":"license"}">
+    ${state.data.cloud_research ? `${messages()}${isAlert ? cloudRunButton("astra",data.run) : ""}
+      ${projectResult(data.run)}` : `<form id="radar-astra-form" class="panel" data-stage="${isAlert?"cart":"license"}">
       <h2>Что проверить</h2><p>${hypothesis}</p>
       ${isAlert && before.cart && after.cart ? `<p>Открытия на компьютерах выросли с ${before.cart.d} до ${after.cart.d}.
         Добавления ${before.cart.n===after.cart.n?`остались на уровне ${after.cart.n}`:`изменились с ${before.cart.n} до ${after.cart.n}`}.</p>` : ""}
       <p class="by">В данных нет общего идентификатора заказа и визита. Связь с изменением индекса BI не установлена.</p>
       <button class="primary">${isAlert?"Проверить путь до корзины":"Проверить вход в подбор Astra"}</button>
-    </form>${messages()}</div>`;
+    </form>${messages()}`}</div>`;
 }
 
 function storeIndicators() {
@@ -256,21 +265,35 @@ function projectResult(run) {
   return `<section class="panel finding-result"><p class="eyebrow">Исследование ${esc(run.id)}</p>
     <div class="section-heading"><h2>Что предлагает Qwen</h2>
     ${button(run.resolution ? "К решению PM" : "Принять решение","finding-decision","","link")}</div>
+    ${item.cloud_claims ? '<p class="by">Qwen3‑32B · OpenRouter</p>' : ""}
     <p class="lede">${esc(item.action)}</p>
-    <div class="grid finding-evidence">${item.selected.map((id,i)=>{
+    <div class="grid finding-evidence">${item.cloud_claims ? cloudEvidence(item.cloud_claims, facts) : item.selected.map((id,i)=>{
       const fact=facts.get(id);
       return `<article><h3>${i?"Что ограничивает вывод":"Основание проверки"}</h3><p>${esc(fact.text)}</p>
         ${sourceLink(fact, "Открыть основание · " + fact.title)}</article>`;
     }).join("")}</div>
-    ${run.finding === "kes" ? taskMatch(item) : ""}
+    ${run.backlog_search || run.finding === "kes" ? taskMatch(item) : ""}
     <p class="by">${esc(item.historical_result)}</p>
     <div id="project-mail-status">${projectMail(run.mail)}</div>
-    ${run.finding === "kes" ? `<details><summary>Как результат изменит решение</summary>
+    ${item.cloud_branches ? `<div class="panel"><h3>Как результат изменит решение</h3>
+      ${item.cloud_branches.map(branch=>`<p><strong>${esc(branch.label)}</strong> · ${esc(branch.text)}</p>`).join("")}
+      ${item.cloud_business ? `<h3>${esc(item.cloud_business.label)}</h3><p>${esc(item.cloud_business.text)}</p>` : ""}</div>` : run.finding === "kes" ? `<details><summary>Как результат изменит решение</summary>
       <p>Повторяется сбой действия — воспроизвести на проблемной конфигурации и оценить откат.</p>
       <p>Действие работает, запись теряется — проверить телеметрию.</p>
       <p>Заказы сместились к менеджеру — сверить общий ряд и проверить доступность самостоятельной закупки.</p></details>` : ""}
     <details><summary>Прочитанные записи</summary><div class="grid">${item.evidence.map(sourceCard).join("")}</div></details>
     </section>${growthCost(run)}${growthOperations(run)}${projectDecision(run)}`;
+}
+
+function cloudEvidence(claims, facts) {
+  const labels = {signal:"Что изменилось", alternative:"Другое объяснение",
+    customer:"Свидетельство покупателя", counterexample:"Контрпример", limit:"Предел вывода"};
+  return Object.entries(labels).map(([key,label]) => {
+    const claim = claims[key], source = facts.get(claim.source);
+    return `<article data-claim="${key}"><h3>${esc(claim.label || label)}</h3>${claim.text === claim.quote ? "" : `<p>${esc(claim.text)}</p>`}
+      <blockquote>${esc(claim.quote)}</blockquote>
+      ${sourceLink(source,"Открыть источник · " + source.title)}</article>`;
+  }).join("");
 }
 
 function taskMatch(item) {
@@ -280,7 +303,7 @@ function taskMatch(item) {
     <p>${match.model_task && match.model_task !== "none" ? "Вариант Qwen · " + esc(match.model_task) + ". " : ""}${esc(match.reason)}</p></div>`;
   return `<div class="radar-related"><strong>Задача, которую нашла Qwen</strong>
     ${button(item.related.id + " · " + item.related.title, "fact", item.related.record_id, "link")}
-    <p>${esc(match.reason)}</p><blockquote>${esc(match.quote)}</blockquote>
+    ${match.reason === match.quote ? "" : `<p>${esc(match.reason)}</p>`}<blockquote>${esc(match.quote)}</blockquote>
     <p class="by">${esc(match.source)} · ${esc(match.version)}</p></div>`;
 }
 
@@ -334,17 +357,18 @@ function officePage(ref) {
   const table=`<section class="panel"><h2>Цены и условия</h2>${productPrices(prices)}</section>`;
   return `<div class="wide radar-page">${hashParams().get("from") ? button("← Обзор магазина","funnel-back",overviewBack(),"link") :
     button("← Ассортимент","page","catalog","link")}
-    <p class="eyebrow">Выбор предложения · октябрь 2026 · EP2-06605</p><h1>${esc(item.title)}</h1>
+    <p class="eyebrow">Выбор предложения · ${prettyDate(prices.matched[0].date)}${state.data.cloud_research ? " · учебный замер" : " · EP2-06605"}</p><h1>${esc(item.title)}</h1>
     <section class="panel radar-signal down"><div><p class="label">Ценовой сигнал</p>
       <h2>${prices.below_store} из ${prices.matched.length} сопоставимых цен ниже Store</h2>
       <p>Цена Store · <strong>${number(prices.store)} ₽</strong>. Бессрочная лицензия на один ПК.</p>
       <p class="by">Сравнение по артикулу и отметке сопоставимости. Замер показывает цены на дату проверки.</p></div>
-      ${detail.run ? (detail.run.status === "done" ? button("К решению","finding-decision","","link") : "") :
+      ${state.data.cloud_research ? cloudRunButton("office",detail.run) :
+        detail.run ? (detail.run.status === "done" ? button("К решению","finding-decision","","link") : "") :
         `<form id="radar-start-form" data-mode="office"><button class="primary">Исследовать предложение Office</button></form>`}
     </section>${messages()}${pricesFirst ? table : ""}${projectResult(detail.run)}${pricesFirst ? "" : table}
     <section class="panel"><h2>Самостоятельный счёт</h2><p>${esc(item.invoice.text)}</p>${sourceLink(item.invoice,"Открыть прохождение")}</section>
-    <section class="panel"><h2>Инициатива Softline</h2><p>${esc(store.initiatives.office.text)}</p>
-      ${sourceLink(store.initiatives.office,"Слайд 18")}${item.sources.map(s=>sourceLink(s)).join(" · ")}</section>
+    <section class="panel"><h2>${state.data.cloud_research ? "Учебная инициатива" : "Инициатива Softline"}</h2><p>${esc(store.initiatives.office.text)}</p>
+      ${sourceLink(store.initiatives.office,state.data.cloud_research ? "Открыть запись" : "Слайд 18")}${item.sources.map(s=>sourceLink(s)).join(" · ")}</section>
   </div>`;
 }
 

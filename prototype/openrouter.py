@@ -9,6 +9,7 @@ from urllib import error, parse, request
 MODEL = "qwen/qwen3-32b"
 BASE = "https://openrouter.ai/api/v1"
 ENABLED = os.getenv("PM_OPENROUTER") == "1"
+JURY_MODE = os.getenv("PM_JURY_CLOUD", "")
 KEY_FILE = Path(os.getenv("PM_OPENROUTER_KEY_FILE", Path.home()/".config/pm-hackathon/openrouter.key"))
 
 
@@ -37,9 +38,11 @@ class ResponseError(RuntimeError):
         self.reply = reply if isinstance(reply, dict) else {}
 
 
-def complete(body, api_key):
+def complete(body, api_key, *, provider=None):
     body.update(model=MODEL, max_tokens=max(224, body["max_tokens"]), reasoning={"enabled": False},
                 usage={"include": True}, provider={"require_parameters": True, "data_collection": "deny"})
+    if provider:
+        body["provider"].update(order=[provider], only=[provider], allow_fallbacks=False)
     body["messages"][0]["content"] += "\n/no_think"
     body["response_format"]["json_schema"]["strict"] = True
     req = request.Request(BASE + "/chat/completions",

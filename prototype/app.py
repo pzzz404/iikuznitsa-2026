@@ -26,6 +26,7 @@ from workflow import (EVENT_RESULTS, event_defaults, experiment, import_research
 
 sys.path.insert(0, str(ROOT))
 from demo.crm.reconcile import cohort_balances
+import cloud_jury
 
 HERE = Path(__file__).resolve().parent
 LOCAL = Path(os.getenv("PM_DATA_DIR", Path.home() / ".local/share/pm-hackathon"))
@@ -33,7 +34,9 @@ INVITES = os.getenv("PM_INVITES")
 PUBLIC_ORIGIN = os.getenv("PM_PUBLIC_ORIGIN")
 EVIDENCE_FILE = os.getenv("PM_EVIDENCE_FILE")
 STORE_FILE = os.getenv("PM_STORE_FILE")
-LIMIT = 4 if openrouter.ENABLED else (int(os.getenv("PM_MODEL_DAILY_LIMIT", "16")) if INVITES else 0)
+JURY_CLOUD = bool(openrouter.JURY_MODE)
+LIMIT = int(os.getenv("PM_MODEL_DAILY_LIMIT", "6")) if JURY_CLOUD else (
+    4 if openrouter.ENABLED else int(os.getenv("PM_MODEL_DAILY_LIMIT", "16")) if INVITES else 0)
 TAG = "сгенерирована ИИ-помощником"
 IMAGES = {"card": "02-crypto-card.png", "cart": "03-guest-basket.png"}
 DB = LOCAL / "backlog.sqlite3"
@@ -61,10 +64,15 @@ def setup():
     if openrouter.ENABLED and (INVITES or not EVIDENCE_FILE or not os.getenv("PM_DATA_DIR")
                                or LOCAL.resolve() == (Path.home() / ".local/share/pm-hackathon").resolve()):
         raise RuntimeError("Для OpenRouter нужен отдельный локальный стенд с синтетическими данными")
-    if INVITES and not (EVIDENCE_FILE and PUBLIC_ORIGIN and os.getenv("PM_DATA_DIR")
+    if INVITES and not JURY_CLOUD and not (EVIDENCE_FILE and PUBLIC_ORIGIN and os.getenv("PM_DATA_DIR")
                         and os.getenv("PM_LOCAL_MODEL_URL") and LIMIT > 0):
         raise RuntimeError("Для жюри нужны каталог, источник демо, свой адрес модели, HTTPS и лимит")
-    if EVIDENCE_FILE:
+    STORE = None
+    if JURY_CLOUD:
+        cloud_jury.check_config(INVITES, PUBLIC_ORIGIN, LIMIT)
+        STORE = cloud_jury.store()
+        FACTS, IMPORTED, FUNNEL = [], [], STORE["history"]
+    elif EVIDENCE_FILE:
         sample = json.loads(Path(EVIDENCE_FILE).read_text())
         if openrouter.ENABLED and sample.get("mode") != "synthetic-openrouter":
             raise RuntimeError("OpenRouter принимает только синтетический набор")
@@ -76,7 +84,8 @@ def setup():
         FACTS, IMPORTED = facts_and_tasks()
         FUNNEL = funnel.load_history()
     CRM = cohort_balances(json.loads((ROOT / "demo/crm/synthetic_sales.json").read_text()))
-    STORE = json.loads(Path(STORE_FILE).read_text()) if STORE_FILE and FUNNEL and not openrouter.ENABLED else None
+    if STORE_FILE and FUNNEL and not JURY_CLOUD and not openrouter.ENABLED:
+        STORE = json.loads(Path(STORE_FILE).read_text())
     if os.getenv("PM_JURY_AGGREGATES_ONLY") == "1" and not (
             INVITES and STORE and STORE.get("demo") is True and STORE["history"].get("jury") is True
             and not os.getenv("PM_RESEARCH_FILE")):
@@ -84,7 +93,7 @@ def setup():
     if STORE:
         FUNNEL = STORE["history"]
         IMPORTED = [{"task_id":row["id"], "title":row["title"], "status":row["status"]} for row in STORE["tasks"]]
-    RESEARCH_CORPUS = growth_research.load() if FUNNEL and not openrouter.ENABLED else []
+    RESEARCH_CORPUS = growth_research.load() if FUNNEL and not openrouter.ENABLED and not JURY_CLOUD else []
     LOCAL.mkdir(parents=True, exist_ok=True, mode=0o700)
     with connect() as db:
         db.execute("CREATE TABLE IF NOT EXISTS studies (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
@@ -98,7 +107,8 @@ def setup():
     mail_path = os.getenv("PM_TEST_MAIL_CONFIG")
     mail = mail_outbox.load(mail_path, PUBLIC_ORIGIN) if mail_path and STORE and INVITES else None
     mail_wake = mail_outbox.worker(connect, mail) if mail else None
-    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS, STORE, mail, mail_wake) if FUNNEL else None
+    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS, STORE, mail, mail_wake,
+                              jury_synthesize=cloud_jury.synthesize if JURY_CLOUD else None) if FUNNEL else None
 
 
 def uploaded(db):
@@ -165,7 +175,7 @@ def save_task(db, payload):
 def metrika():
     counter = os.getenv("METRIKA_COUNTER_ID")
     token = os.getenv("METRIKA_OAUTH_TOKEN")
-    if EVIDENCE_FILE or not (counter and token):
+    if EVIDENCE_FILE or JURY_CLOUD or not (counter and token):
         return {"configured": False, "message": "Тестовый счётчик участника пока не подключён."}
     end = date.today() - timedelta(days=1)
     start = end - timedelta(days=6)
@@ -263,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply({"error":"Для этой задачи нет экспорта с адресом находки."}, status=404)
             return self.reply(redmine_csv(task, TAG, self.public_origin()), "text/csv; charset=utf-8",
                               attachment=f"pm-radar-{task_id:03d}-redmine.csv")
-        if not EVIDENCE_FILE and path.startswith("/images/") and path[8:] in IMAGES:
+        if not JURY_CLOUD and not EVIDENCE_FILE and path.startswith("/images/") and path[8:] in IMAGES:
             file = ROOT / "research/store" / IMAGES[path[8:]]
             if file.exists():
                 return self.reply(file.read_bytes(), "image/png")
@@ -274,17 +284,18 @@ class Handler(BaseHTTPRequestHandler):
                     WHERE NOT ? OR json_extract(s.payload, '$.topic')='funnel' ORDER BY t.id DESC""",
                     (bool(INVITES and FUNNEL),)
                 )]
-                research = [] if INVITES else uploaded(db)
+                research = [] if INVITES or JURY_CLOUD else uploaded(db)
                 deferred = [] if INVITES and FUNNEL else [
                     dict(row) for row in db.execute("SELECT * FROM deferred WHERE until_date>=?", (date.today().isoformat(),))]
                 return self.reply({"topics": TOPICS, "decisions": DECISIONS, "facts": FACTS,
                                    "research": research, "tasks": tasks, "tag": TAG, "deferred": deferred,
                                    "imported": [{"id": r["task_id"], "title": r["title"], "status": r["status"]}
                                                 for r in IMPORTED],
-                                   "crm": CRM, "sample": bool(EVIDENCE_FILE), "jury": bool(INVITES),
+                                   "crm": CRM, "sample": bool(EVIDENCE_FILE) or JURY_CLOUD, "jury": bool(INVITES),
                                    "demo_store": bool(STORE and STORE.get("synthetic")),
-                                   "external": openrouter.ENABLED, "funnel": funnel.options(FUNNEL),
-                                   "catalog": radar.CATALOG if FUNNEL else {},
+                                   "external": openrouter.ENABLED or JURY_CLOUD, "cloud_research": JURY_CLOUD,
+                                   "funnel": funnel.options(FUNNEL),
+                                   "catalog": radar.CATALOG if FUNNEL and not JURY_CLOUD else {},
                                    "growth": growth_research.finding(RESEARCH_CORPUS) if FUNNEL else None,
                                    "store": ({k: STORE[k] for k in ("catalog","coverage","threshold","alerts","releases",
                                              "definitions","tasks","initiatives","lk")} |
@@ -311,7 +322,10 @@ class Handler(BaseHTTPRequestHandler):
                     if STORE and path == "/api/radar/office":
                         return self.reply({"run":radar.project_run(db,"office",{},args.get("run"))})
                     if STORE and path == "/api/radar/astra":
-                        return self.reply(astra_diagnostic(STORE,args))
+                        result = astra_diagnostic(STORE,args)
+                        if JURY_CLOUD:
+                            result["run"] = radar.project_run(db, "astra", result["filter"], args.get("run"))
+                        return self.reply(result)
                     if STORE and path == "/api/radar/orders":
                         params = funnel.selection(args)
                         windows = [funnel.WINDOWS[params[k]] for k in ("before","after")]
@@ -334,10 +348,11 @@ class Handler(BaseHTTPRequestHandler):
                 query = """SELECT calls.*, json_extract(r.input,'$.finding') AS finding FROM calls
                            LEFT JOIN radar_runs r ON r.id=calls.study""" if FUNNEL else "SELECT * FROM calls"
                 calls = [dict(row) for row in db.execute(
-                    query + " WHERE NOT ? OR scenario LIKE 'Воронка · %' ORDER BY calls.id DESC LIMIT 200",
-                    (bool(INVITES and FUNNEL),))]
+                    query + """ WHERE NOT ? OR scenario LIKE 'Воронка · %'
+                                OR (? AND calls.platform='OpenRouter') ORDER BY calls.id DESC LIMIT 200""",
+                    (bool(INVITES and FUNNEL), JURY_CLOUD))]
                 return self.reply({"calls": calls, "usage": usage_sum(calls)})
-        if path == "/api/metrika":
+        if path == "/api/metrika" and not JURY_CLOUD:
             try:
                 return self.reply(metrika())
             except RuntimeError as exc:
@@ -374,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
                 cookie[COOKIE]["max-age"] = ttl
                 return self.reply({"ok": True}, cookie=cookie[COOKIE].OutputString())
             if path == "/api/study":
-                if INVITES and FUNNEL:
+                if (INVITES or JURY_CLOUD) and FUNNEL:
                     raise ValueError("Выберите этап воронки в демонстрационном наборе")
                 q = " ".join(data.get("question", "").split())
                 if not 3 <= len(q) <= 350:
@@ -384,12 +399,15 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     research = [] if INVITES else uploaded(db)
                 return self.reply(study(q, data.get("topic"), FACTS, TOPICS, research, connect, LIMIT))
-            if path == "/api/funnel/study" and FUNNEL:
+            if path == "/api/funnel/study" and FUNNEL and not JURY_CLOUD:
                 return self.reply(study_funnel(funnel.study_case(FUNNEL, data), connect, LIMIT))
             if path == "/api/radar/start" and FUNNEL:
-                mode, case = radar.make_case(FUNNEL, data, RESEARCH_CORPUS, STORE)
                 with connect() as db:
-                    run = radar.enqueue(db, mode, case)
+                    if JURY_CLOUD:
+                        run = cloud_jury.enqueue(db, STORE, data, LIMIT)
+                    else:
+                        mode, case = radar.make_case(FUNNEL, data, RESEARCH_CORPUS, STORE)
+                        run = radar.enqueue(db, mode, case)
                 RADAR_WAKE.set()
                 return self.reply(run, status=202)
             with connect() as db:
@@ -413,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Выберите будущую дату")
                     db.execute("INSERT OR REPLACE INTO deferred VALUES (?,?,?)", (topic, until, reason))
                     response = {"ok": True}
-                elif path == "/api/research" and not INVITES and not openrouter.ENABLED:
+                elif path == "/api/research" and not INVITES and not openrouter.ENABLED and not JURY_CLOUD:
                     response = import_research(db, data.get("items"), TOPICS)
                 elif path == "/api/radar/seen" and FUNNEL:
                     radar.mark_seen(db, data.get("id", ""))

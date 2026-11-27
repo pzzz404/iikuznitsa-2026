@@ -200,6 +200,8 @@ def report(data, args):
              "after": data["steps"].get(after, []) if show_steps else []}
     visits = data.get("visits", {}).get(family, {}) if not audience_gap else {}
     series = data.get("series", {}).get(family, {}) if orders else {}
+    order_source = "Учебный магазин · продажи · недельный индекс" if data.get("synthetic") else ORDER_SOURCE
+    metric_source = "Учебный магазин · метрики" if data.get("synthetic") else METRIC_SOURCE
     coverage = {"before": WINDOWS[before]["weeks"] if orders.get(family) else 0,
                 "after": WINDOWS[after]["weeks"] if orders.get(family) else 0,
                 "partial": bool(WINDOWS[after].get("partial"))}
@@ -216,7 +218,7 @@ def report(data, args):
             "options": data.get("option_counts", {}).get(after, {}) if family=="kes" and device=="all" and not audience_gap else {},
             "orders_gap": missing_orders, "cart_gap": cart_gap, "order_gap": MISSING_ORDER,
             "payment_gap": MISSING_PAYMENT, "tracking_break": tracking_break, "login": data["login"],
-            "released": data["released"], "order_source": ORDER_SOURCE, "metric_source": METRIC_SOURCE}
+            "released": data["released"], "order_source": order_source, "metric_source": metric_source}
 
 
 def study_case(data, args):
@@ -225,6 +227,8 @@ def study_case(data, args):
         raise ValueError("Выберите этап воронки")
     r = report(data, args)
     f = r["filter"]
+    metric_source = r["metric_source"]
+    history_source = "Учебный магазин" if data.get("synthetic") else "Softline v17"
     if r["audience_gap"]:
         raise ValueError(r["audience_gap"])
     chosen = r["orders"].get(f["family"])
@@ -236,7 +240,7 @@ def study_case(data, args):
                      f"{measurement['n']} визитов с добавлением из {measurement['d']} визитов с открытием по доступным строкам."
                      if measurement else r["cart_gap"])
     cart = {"id": "v17-cart", "title": "Открытие конфигуратора → корзина", "type": "Учёт",
-            "text": measured_cart, "source": METRIC_SOURCE + " · cfg_add_to_cart_rate"}
+            "text": measured_cart, "source": metric_source + " · cfg_add_to_cart_rate"}
     counts = r["steps"]["after"]
     reach = r["pairs"].get("after", {}).get("cfg_reach_rate")
     selected = (f"{counts[0]['n']} из {counts[0]['d']} визитов достигли шага 2 после шага 1." if counts else
@@ -244,27 +248,27 @@ def study_case(data, args):
                 "В выбранном разрезе нет счётчиков шагов выбора.")
     supports = [
         {"id": "v17-orders", "title": "Динамика самостоятельных заказов", "type": "Индекс BI",
-         "text": f"{r['family_name']} · {values} Это средний недельный индекс.", "source": ORDER_SOURCE},
+         "text": f"{r['family_name']} · {values} Это средний недельный индекс.", "source": r["order_source"]},
         {"id": "v17-release", "title": "Хронология изменений", "type": "Релизы",
          "text": f"Вход изменён {data['login']}. Фильтры подбора Kaspersky выпущены {data['released']}.",
-         "source": "Softline v17 · Релизы · R-08, R-09"},
+         "source": history_source + " · Релизы · R-08, R-09"},
     ]
     if stage == "license":
         supports.insert(0, {"id": "v17-choice", "title": "Наблюдаемое начало выбора", "type": "Замер",
-                            "text": selected, "source": METRIC_SOURCE + " · cfg_step_dropoff / cfg_reach_rate"})
+                            "text": selected, "source": metric_source + " · cfg_step_dropoff / cfg_reach_rate"})
     if stage == "cart" and measurement:
         supports.insert(0, cart)
     limitations = [
         cart if stage != "cart" or not measurement else
         {"id": "v17-attribution", "title": "Полнота событий", "type": "Ограничение",
-         "text": "Зафиксированные события требуют сверки с журналом корзины.", "source": METRIC_SOURCE},
+         "text": "Зафиксированные события требуют сверки с журналом корзины.", "source": metric_source},
         {"id": "v17-join", "title": "Связка шагов отсутствует", "type": "Ограничение",
-         "text": f"{MISSING_ORDER} {MISSING_PAYMENT}", "source": "Softline v17 · Метрики и продажи"},
+         "text": f"{MISSING_ORDER} {MISSING_PAYMENT}", "source": history_source + " · Метрики и продажи"},
     ]
     if r["tracking_break"]:
         limitations.append({"id": "v17-entry", "title": "Изменение механизма входа", "type": "Сопоставимость",
                             "text": "После смены входа мог измениться состав визитов. Сравнение визитных долей через 29.09 некорректно.",
-                            "source": "Softline v17 · Релизы · R-08"})
+                            "source": history_source + " · Релизы · R-08"})
     action = {"license": "Воспроизвести путь выбора лицензии на компьютере и телефоне",
               "cart": "Сверить фактическое добавление с событием корзины",
               "order": "Сверить корзину с событиями и самостоятельным заказом",

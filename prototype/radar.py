@@ -11,6 +11,7 @@ from store_history import sales_basis
 from inference import study_funnel, funnel_study_identity
 from workflow import digest, now, usage_for, usage_sum
 
+CLOUD_FORMAT = "cloud-teaching-v1"
 CATALOG = {
     "office": {"title": "Office Home and Business 2024", "stage": "Самостоятельный счёт",
                "source": "Конкурентное исследование · 04_Покупка_Счет",
@@ -41,9 +42,10 @@ def deviation(data, args, store=None):
     result = {
         "filter": selected, "family": report["family_name"], "index": index,
         "weeks": funnel.WINDOWS[selected["before"]]["weeks"], "compare": report["orders"].get(compare),
-        "compare_name": funnel.FAMILIES[compare], "scope": case["scope"], "source": funnel.ORDER_SOURCE,
+        "compare_name": funnel.FAMILIES[compare], "scope": case["scope"], "source": report["order_source"],
         "evidence": case["supports"] + case["limitations"], "case": case,
         "login": report["login"], "released": report["released"], "jury": report["jury"],
+        "synthetic": data.get("synthetic", False),
     }
     if store:
         basis = [sales_basis(store, family, [funnel.WINDOWS[selected[k]] for k in ("before","after")])
@@ -122,7 +124,7 @@ def next_run(db):
     return None
 
 
-def worker(connect, daily_limit, corpus, store=None, mail=None, mail_wake=None):
+def worker(connect, daily_limit, corpus, store=None, mail=None, mail_wake=None, jury_synthesize=None):
     signal = threading.Event()
 
     def run():
@@ -137,7 +139,9 @@ def worker(connect, daily_limit, corpus, store=None, mail=None, mail_wake=None):
                     with connect() as db:
                         saved = db.execute("SELECT id FROM studies WHERE id=?", (run_id,)).fetchone()
                     if not saved:
-                        if case.get("finding") == growth_research.KEY:
+                        if jury_synthesize:
+                            jury_synthesize(case, run_id, connect, daily_limit)
+                        elif case.get("finding") == growth_research.KEY:
                             growth_research.synthesize(case, run_id, corpus, connect, daily_limit)
                         elif case.get("finding") in store_research.QUESTIONS:
                             store_research.synthesize(case, run_id, store, connect, daily_limit)
@@ -170,10 +174,10 @@ def worker(connect, daily_limit, corpus, store=None, mail=None, mail_wake=None):
 
 def public_run(row):
     data = json.loads(row["input"])
-    current_backlog_search = data.get("format") == store_research.MATCH_FORMAT and data.get("finding") == "kes"
+    current_backlog_search = has_backlog_search(data)
     return {k: row[k] for k in ("id", "mode", "status", "created", "finished", "error", "seen", "subject")} | {
         "scope": data["scope"], "filter": data["filter"], "stage": data["stage"],
-        "question": data.get("question"), "finding": data.get("finding"),
+        "question": data.get("question"), "finding": data.get("finding"), "provider": data.get("provider"),
         "backlog_search": current_backlog_search,
         "resolution": saved_resolution(row["resolution"], current_backlog_search)}
 
@@ -187,11 +191,16 @@ def saved_resolution(raw, verified):
     return result
 
 
+def has_backlog_search(case):
+    return (case.get("format") == CLOUD_FORMAT or
+            case.get("format") == store_research.MATCH_FORMAT and case.get("finding") == "kes")
+
+
 def study_view(db, record, case, run_id, operations=None):
     # Older runs contained a prefilled candidate. Keep the study and decision, without promoting that link.
     record.pop("candidate", None)
     record.pop("related", None)
-    if case.get("finding") != "kes" or case.get("format") != store_research.MATCH_FORMAT:
+    if not has_backlog_search(case):
         return record
     proof = record.get("task_match") or {}
     if proof.get("status") != "matched":
@@ -203,12 +212,18 @@ def study_view(db, record, case, run_id, operations=None):
         if op["op"] != "open":
             continue
         row = op["record"]
-        if (row["kind"] == "backlog"
-                and (row["id"], row["task_id"], row["source"], row["record"], row["version"], row["text"])
+        if row["kind"] != "backlog":
+            continue
+        basis = proof.get("model_basis")
+        if case.get("format") == CLOUD_FORMAT and case.get("finding") != "kes":
+            eligible = (basis == "mechanism" and row.get("mechanism") == case["mechanism"]
+                        and row.get("product") == case["finding"])
+        else:
+            eligible = (store_research.task_fit(row, case["scope"]["семейство"])
+                        and store_research.task_evidence(row).get(basis))
+        if (eligible and (row["id"], row["task_id"], row["source"], row["record"], row["version"], row["text"])
                 == tuple(proof.get(k) for k in ("record_id", "task_id", "source", "address", "version", "quote"))
-                and all((row.get("source_id"), row["record"], row["version"]))
-                and store_research.task_fit(row, case["scope"]["семейство"])
-                and store_research.task_evidence(row).get(proof.get("model_basis"))):
+                and all((row.get("source_id"), row["record"], row["version"]))):
             record["related"] = {"id": row["task_id"], "record_id": row["id"], "title": row["title"],
                                  "status": row["status"], "source": row["source"]}
             return record
@@ -250,14 +265,14 @@ def view_run(db, run_id, include_result=True):
 
 
 def project_run(db, key, filters, ref=None, summary=False):
-    mode, stage = ("release","order") if key == "kes" else ("office","offer")
+    mode, stage = {"kes": ("release", "order"), "office": ("office", "offer"), "astra": ("astra", "cart")}[key]
     subject = digest([mode, filters, stage])
     if not ref:
         row = db.execute("""SELECT id FROM radar_runs WHERE subject=?
                             AND json_extract(input,'$.finding')=?
-                            AND (? != 'kes' OR json_extract(input,'$.format')=?)
+                            AND (? != 'kes' OR json_extract(input,'$.format') IN (?,?))
                             ORDER BY (status='done') DESC, created DESC LIMIT 1""",
-                         (subject,key,key,store_research.MATCH_FORMAT)).fetchone()
+                         (subject,key,key,store_research.MATCH_FORMAT,CLOUD_FORMAT)).fetchone()
         ref = row["id"] if row else None
     run = view_run(db, ref, include_result=not summary) if ref else None
     if ref and (not run or run["finding"] != key or run["filter"] != filters):
@@ -311,7 +326,7 @@ def resolve(db, args, save_task):
     else:
         if not resolution["followup"]:
             raise ValueError("Укажите условие последующей проверки")
-        if run["finding"] in store_research.QUESTIONS:
+        if run["finding"] in store_research.QUESTIONS or run["provider"] == "OpenRouter":
             owner = args.get("owner", "")
             if not isinstance(owner, str) or not 1 <= len(owner.strip()) <= 120:
                 raise ValueError("Укажите владельца проверки")

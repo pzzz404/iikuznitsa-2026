@@ -96,9 +96,11 @@ def string():
     return {"type": "string"}
 
 
-def respond(connect, daily_limit, run_id, step, prompt, output, validator, tokens, scenario=SCENARIO):
+def respond(connect, daily_limit, run_id, step, prompt, output, validator, tokens, scenario=SCENARIO, *,
+            jury_provider=None):
     call_id, reply = ask_model(None, None, None, f"{scenario} · {step}", digest([run_id, step]),
-                               connect, daily_limit, spec=(prompt, output, tokens), run_id=run_id, cloud=False)
+                               connect, daily_limit, spec=(prompt, output, tokens), run_id=run_id, cloud=False,
+                               jury_provider=jury_provider)
     try:
         result = validator(json.loads(reply["choices"][0]["message"]["content"]))
     except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:

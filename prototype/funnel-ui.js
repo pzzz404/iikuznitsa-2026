@@ -296,11 +296,11 @@ async function runFunnelStudy() {
 function eventCheck(task) {
   const p = task.plan;
   const outcomes = state.data.event_results;
-  const finding = task.radar?.finding === "kes";
+  const isKes = task.radar?.finding === "kes";
   return `<div class="wide">${button("← " + taskLabel(task.id), "task", task.id, "link")}
-    <p class="eyebrow">${finding ? "Самостоятельный заказ" : "Проверка после релиза"} · ${taskLabel(task.id)}</p>
-    <h1>${finding ? "Проверка после релиза" : "Сверка действия и события"}</h1><p class="lede">${esc(task.title)}</p>
-    ${finding ? button("Открыть исходную находку","run",task.radar.id,"link") : ""}
+    <p class="eyebrow">${isKes ? "Самостоятельный заказ" : "Проверка после релиза"} · ${taskLabel(task.id)}</p>
+    <h1>${isKes ? "Проверка после релиза" : "Сверка действия и события"}</h1><p class="lede">${esc(task.title)}</p>
+    ${task.radar?.finding ? button("Открыть исходную находку","run",task.radar.id,"link") : ""}
     <section class="panel"><h2>Правило проверки</h2><p>${esc(task.criterion)}</p>${shownRelated(task.study_data)}
       ${task.radar?.owner ? `<p class="by">Владелец · ${esc(task.radar.owner)}. Вернуться ${prettyDate(task.radar.due)}.</p>` : ""}
       ${task.radar?.followup ? `<p class="by">Условие повторной проверки · ${esc(task.radar.followup)}</p>` : ""}</section>

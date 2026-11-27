@@ -5,9 +5,9 @@ from urllib.parse import quote
 
 
 def finding_url(origin, finding, filters, run_id):
-    if finding == "kes":
+    if finding in {"kes", "astra"}:
         ref = ".".join(filters[key] for key in ("family", "before", "after", "device", "audience"))
-        route = "deviation/" + ref
+        route = ("deviation/" if finding == "kes" else "astra/below90.") + ref
     elif finding == "office":
         route = "catalog/office"
     elif finding == "repeat-mail":

@@ -78,6 +78,7 @@ def build():
         priority="Средний",
         metrics="cfg_add_to_cart_rate",
         releases=[],
+        mechanism="cart_event",
     )
     navigation = source(
         "Бэклог", 2, "Обновить навигацию личного кабинета",
@@ -85,19 +86,30 @@ def build():
         "backlog",
     )
     navigation.update(source_id=navigation["id"], id="T-06", status="Готово")
+    filters = source(
+        "Бэклог", 3, "Выпустить фильтры подбора Kaspersky",
+        "В учебном магазине команда выпустила фильтры выбора редакции и числа лицензий. "
+        "Описание фиксирует запуск функции и не содержит наблюдений об ошибках после релиза.",
+        "backlog",
+    )
+    filters.update(source_id=filters["id"], id="T-07", status="Готово")
     releases = [
         source(
-            "Релизы", i, name, text, "release", date=day, metrics="cfg"
+            "Релизы", i, name, text, "release", date=day, metrics="cfg", study_roles=roles
         )
-        for i, (name, text, day) in enumerate(
+        for i, (name, text, day, roles) in enumerate(
             [
-                ("R-08", "Изменился вход в учебный магазин.", "2026-09-28"),
-                ("R-09", "В учебном магазине появились фильтры подбора.", "2026-10-02"),
-                ("R-10", "Обновлён блок рекомендаций.", "2026-10-23"),
+                ("R-08", "Изменился вход в учебный магазин.", "2026-09-28", ["alternative"]),
+                ("R-09", "В учебном магазине появились фильтры подбора.", "2026-10-02", ["alternative"]),
+                ("R-10", "Обновлён блок рекомендаций.", "2026-10-23", []),
             ],
             1,
         )
     ]
+    astra_cart = {"nov02": (18, 150), "nov09": (19, 238)}
+    astra_ratios = {week: {"cfg_add_to_cart_rate": {"desktop": {
+        "n": n, "d": d, "rows": 7, "expected_rows": 7,
+    }}} for week, (n, d) in astra_cart.items()}
     definitions = {}
     for key, title in {
         "family_orders_idx": "Индекс самостоятельных заказов",
@@ -119,7 +131,7 @@ def build():
     history = dict(
         orders=orders,
         series=series,
-        ratios={},
+        ratios={"astra": astra_ratios},
         visits={},
         steps={},
         option_counts={},
@@ -162,22 +174,49 @@ def build():
                 "service",
             ),
         )
+    office_prices = catalog["office"]["prices"]
+    for offer in office_prices["matched"]:
+        offer["conditions"] = "Бессрочная лицензия на один ПК"
+    invoice_offer = office_prices["matched"][0]
+    invoice_offer["conditions"] += " · счёт по запросу"
+    invoice_offer["invoice_required"] = True
+    office_prices["partial"].append(source(
+        "Цены", "office4", "Учебное предложение 4",
+        "Годовая подписка. С бессрочной лицензией сопоставима только по названию.",
+        "competitor", amount=7500, match="Частичная", conditions="Годовая подписка",
+        date=invoice_offer["date"],
+    ))
+    additional_tasks = []
+    for i, (product, identifier, title, text, mechanism) in enumerate((
+        ("astra", "A-01", "Сверить результат подбора Astra на ПК",
+         "Повторить выбор лицензии Astra и проверить факт добавления и регистрацию в Метрике.", "astra_cart"),
+        ("astra", "A-02", "Изменить сортировку каталога", "Обновить порядок отображения товаров в личном кабинете.", None),
+        ("office", "O-01", "Сверить экономику сопоставимого Office",
+         "Проверить лицензии, себестоимость и оплаты до решения о скидке.", "office_prices"),
+        ("office", "O-02", "Переставить кнопку в карточке", "Изменить цвет и место кнопки запроса счёта.", None),
+    ), 4):
+        entry = source("Бэклог", i, title, text, "backlog", product=product, mechanism=mechanism, status="Открыта")
+        entry.update(source_id=entry["id"], id=identifier)
+        additional_tasks.append(entry)
     interviews = [
-        source("Учебные интервью", i, title, text, "interview", cohort="Демо", role="")
-        for i, (title, text) in enumerate(
+        source("Учебные интервью", i, title, text, "interview", cohort="Демо", role="", study_roles=[study_role])
+        for i, (title, text, study_role) in enumerate(
             [
                 (
                     "Выбор редакции",
                     "В учебном интервью покупатель сомневается между двумя вариантами лицензии.",
+                    "customer",
                 ),
                 (
                     "Самостоятельная покупка",
                     "В другом примере покупатель без помощи повторил заказ с сайта.",
+                    "counterexample",
                 ),
-                ("Помощь при подборе", "Вопрос менеджеру возник при смене редакции."),
+                ("Помощь при подборе", "Вопрос менеджеру возник при смене редакции.", "customer"),
                 (
                     "Продление Cloud онлайн",
                     "В учебном сценарии продление прошло через корзину.",
+                    "counterexample",
                 ),
             ],
             1,
@@ -201,7 +240,7 @@ def build():
         synthetic=True,
         history=history,
         sales=sales,
-        tasks=[task, navigation],
+        tasks=[task, navigation, filters, *additional_tasks],
         releases=releases,
         definitions=definitions,
         coverage=dict(
@@ -240,7 +279,9 @@ def build():
         interviews=interviews,
         reach_rows={},
         reach_full=None,
-        astra_rows={"cfg_step_dropoff": {}, "cfg_add_to_cart_rate": {}},
+        astra_rows={"cfg_step_dropoff": {}, "cfg_add_to_cart_rate": {"desktop": {
+            (start + timedelta(days=18 * 7 + i)).isoformat(): [i + 1] for i in range(14)
+        }}},
         book=BOOK,
         version=VERSION,
     )

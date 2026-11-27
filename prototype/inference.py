@@ -16,9 +16,11 @@ DECISIONS = {"measure": "Сначала измерить базовый уров
 
 
 def ask_model(question, topics, facts, scenario, request_key, connect, daily_limit,
-              case=None, spec=None, run_id=None, cloud=True):
+              case=None, spec=None, run_id=None, cloud=True, jury_provider=None):
     url = parse.urlsplit(MODEL_URL)
-    api_key = openrouter.key() if openrouter.ENABLED and cloud else None
+    if jury_provider and (not openrouter.JURY_MODE or spec is None or not run_id):
+        raise RuntimeError("Облачный вызов доступен только из учебного исследования.")
+    api_key = openrouter.key() if jury_provider or (openrouter.ENABLED and cloud) else None
     if not api_key and (url.hostname not in {"localhost", "127.0.0.1", "::1"} or url.scheme != "http"):
         raise RuntimeError("Разрешена локальная модель")
     if not MODEL_LOCK.acquire(blocking=False):
@@ -43,7 +45,8 @@ def ask_model(question, topics, facts, scenario, request_key, connect, daily_lim
         t0 = monotonic()
         try:
             if spec:
-                reply = send_completion(*spec, api_key=api_key, timeout=450 if spec[2] > 224 else 155)
+                reply = send_completion(*spec, api_key=api_key, provider=jury_provider,
+                                        timeout=450 if spec[2] > 224 else 155)
             else:
                 reply = funnel_completion(question, case, api_key) if case else completion(question, topics, facts, api_key)
         except openrouter.ResponseError as exc:
@@ -105,12 +108,12 @@ def completion(question, topics, facts, api_key):
     return send_completion(prompt, schema, api_key=api_key)
 
 
-def send_completion(prompt, schema, max_tokens=112, *, api_key=None, timeout=95):
+def send_completion(prompt, schema, max_tokens=112, *, api_key=None, timeout=95, provider=None):
     body = {"model": "pm-local", "messages": [{"role": "user", "content": prompt}],
             "temperature": 0, "max_tokens": max_tokens,
             "response_format": {"type": "json_schema", "json_schema": {"name": "evidence", "schema": schema}}}
     if api_key:
-        return openrouter.complete(body, api_key)
+        return openrouter.complete(body, api_key, provider=provider)
     req = request.Request(MODEL_URL.rstrip("/") + "/v1/chat/completions",
                           data=json.dumps(body, ensure_ascii=False).encode(),
                           headers={"Content-Type": "application/json"})
