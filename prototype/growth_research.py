@@ -96,8 +96,8 @@ def string():
     return {"type": "string"}
 
 
-def respond(connect, daily_limit, run_id, step, prompt, output, validator, tokens):
-    call_id, reply = ask_model(None, None, None, f"{SCENARIO} · {step}", digest([run_id, step]),
+def respond(connect, daily_limit, run_id, step, prompt, output, validator, tokens, scenario=SCENARIO):
+    call_id, reply = ask_model(None, None, None, f"{scenario} · {step}", digest([run_id, step]),
                                connect, daily_limit, spec=(prompt, output, tokens), run_id=run_id, cloud=False)
     try:
         result = validator(json.loads(reply["choices"][0]["message"]["content"]))

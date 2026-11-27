@@ -1,9 +1,12 @@
 import json
 import logging
 import threading
+from datetime import date
 
 import funnel
 import growth_research
+import store_research
+from store_history import sales_basis
 from inference import study_funnel, funnel_study_identity
 from workflow import digest, now, usage_for, usage_sum
 
@@ -22,7 +25,7 @@ FOLLOW_UP = ("После исправления сверить совпаден�
              "На полных неделях с сопоставимым входом затем проверить динамику индекса и решить, продолжать ли наблюдение.")
 
 
-def deviation(data, args):
+def deviation(data, args, store=None):
     report = funnel.report(data, args)
     selected = report["filter"]
     index = report["orders"].get(selected["family"])
@@ -34,16 +37,28 @@ def deviation(data, args):
         case["action"] = "Сверить корзину и события подбора Kaspersky"
         case["criterion"] = funnel.study_case(data, dict(selected, stage="cart"))["criterion"]
         case["historical_result"] = funnel.NO_RELEASE_RESULT
-    return {
+    result = {
         "filter": selected, "family": report["family_name"], "index": index,
         "weeks": funnel.WINDOWS[selected["before"]]["weeks"], "compare": report["orders"].get(compare),
         "compare_name": funnel.FAMILIES[compare], "scope": case["scope"], "source": funnel.ORDER_SOURCE,
         "evidence": case["supports"] + case["limitations"], "related": case["candidate"], "case": case,
         "login": report["login"], "released": report["released"], "jury": report["jury"],
     }
+    if store:
+        basis = [sales_basis(store, family, [funnel.WINDOWS[selected[k]] for k in ("before","after")])
+                 for family in (selected["family"], compare)]
+        result.update(series=store["sales"][selected["family"]], coverage=report["coverage"],
+                      events=[row for row in store["releases"] if row["title"] in ("R-08","R-09","R-10")],
+                      reach=report["pairs"]["after"].get("cfg_reach_rate"),
+                      reach_full=store.get("reach_full"),
+                      definition=store["definitions"]["family_orders_idx"],
+                      customer_evidence=store["interviews"],
+                      cart_definition=store["definitions"]["cfg_add_to_cart_rate"])
+        result["evidence"].extend(basis + store["interviews"])
+    return result
 
 
-def make_case(data, args, corpus=()):
+def make_case(data, args, corpus=(), store=None):
     mode = args.get("mode", "release")
     if mode == "release":
         item = deviation(data, args)
@@ -51,6 +66,10 @@ def make_case(data, args, corpus=()):
             raise ValueError("Для Astra доступен отдельный разбор прохождения подбора.")
         case = item["case"]
         case["question"] = "Есть ли связь между падением самостоятельных заказов и релизом конфигуратора Kaspersky?"
+        if store:
+            case = store_research.make_case(store, "kes", item["filter"], case)
+    elif mode == "office" and store:
+        case = store_research.make_case(store, "office", {})
     elif mode == "growth":
         case = growth_research.case_for(corpus)
     elif mode == "stage":
@@ -99,7 +118,7 @@ def next_run(db):
     return None
 
 
-def worker(connect, daily_limit, corpus):
+def worker(connect, daily_limit, corpus, store=None):
     signal = threading.Event()
 
     def run():
@@ -116,6 +135,8 @@ def worker(connect, daily_limit, corpus):
                     if not saved:
                         if case.get("finding") == growth_research.KEY:
                             growth_research.synthesize(case, run_id, corpus, connect, daily_limit)
+                        elif case.get("finding") in store_research.QUESTIONS:
+                            store_research.synthesize(case, run_id, store, connect, daily_limit)
                         else:
                             study_funnel(case, connect, daily_limit)
                     with connect() as db:
@@ -176,6 +197,20 @@ def view_run(db, run_id, include_result=True):
     return run
 
 
+def project_run(db, key, filters, ref):
+    mode, stage = ("release","order") if key == "kes" else ("office","offer")
+    subject = digest([mode, filters, stage])
+    if not ref:
+        row = db.execute("""SELECT id FROM radar_runs WHERE subject=?
+                            AND json_extract(input,'$.finding')=? ORDER BY created DESC LIMIT 1""",
+                         (subject,key)).fetchone()
+        ref = row["id"] if row else None
+    run = view_run(db, ref) if ref else None
+    if ref and (not run or run["finding"] != key or run["filter"] != filters):
+        raise ValueError("Это исследование относится к другой находке или периоду.")
+    return run
+
+
 def view_finding(db, corpus, ref):
     finding = growth_research.finding(corpus)
     rows = db.execute("""SELECT * FROM radar_runs WHERE json_extract(input,'$.finding')=?
@@ -207,7 +242,7 @@ def resolve(db, args, save_task):
     if run["resolution"]:
         return run["resolution"]
     kind = args.get("kind")
-    allowed = {"new", "segment", "defer"} if run["finding"] else {"link", "new", "defer"}
+    allowed = {"new", "segment", "defer"} if run["finding"] == growth_research.KEY else {"link", "new", "defer"}
     if kind not in allowed:
         raise ValueError("Выберите решение PM")
     result = run["result"]
@@ -222,6 +257,15 @@ def resolve(db, args, save_task):
     else:
         if not resolution["followup"]:
             raise ValueError("Укажите условие последующей проверки")
+        if run["finding"] in store_research.QUESTIONS:
+            owner = args.get("owner", "")
+            if not isinstance(owner, str) or not 1 <= len(owner.strip()) <= 120:
+                raise ValueError("Укажите владельца проверки")
+            try:
+                due = date.fromisoformat(args.get("due","")).isoformat()
+            except (ValueError,TypeError) as exc:
+                raise ValueError("Укажите дату возврата к проверке") from exc
+            resolution.update(owner=owner.strip(), due=due, method=result["assessment"]["check"])
         if kind == "link":
             related = result.get("related") or result.get("candidate")
             if not related:

@@ -1,7 +1,7 @@
 "use strict";
 
 const radarView = {runs: [], details: null, detailKey: null, pending: null, polling: false};
-const radarPages = ["deviation", "research", "activity", "work", "astra", "growth", "catalog"];
+const radarPages = ["deviation", "research", "activity", "work", "astra", "growth", "catalog", "lk"];
 const radarStates = {queued:"В очереди",running:"Выполняется",done:"Завершено",failed:"Ошибка"};
 const decisionNames = {link:"Связать проверку с задачей",new:"Утвердить проверку",segment:"Уточнить сегмент",defer:"Отложить"};
 const modelActions = {event:"Сверить действие и событие",reproduce:"Воспроизвести шаг",
@@ -19,11 +19,16 @@ function deviationArgs(ref) {
 }
 
 function radarDetailPath(page, ref) {
-  if (page === "deviation") return "radar/deviation?" + new URLSearchParams(deviationArgs(ref));
+  if (page === "deviation") {
+    const [filter,run] = String(ref).split("~");
+    return "radar/deviation?" + new URLSearchParams({...deviationArgs(filter), ...(run ? {run} : {})});
+  }
   if (page === "research") return "radar/run?" + new URLSearchParams({id:ref});
   if (page === "astra") return "funnel?family=astra&before=oct12&after=oct19";
   if (page === "growth" && ref?.split("~")[0] === state.data.growth.key)
     return "radar/finding?" + new URLSearchParams({id:ref.split("~")[1] || ""});
+  if (page === "catalog" && state.data.store && ref?.split("~")[0] === "office")
+    return "radar/office?" + new URLSearchParams({run:ref.split("~")[1] || ""});
   return null;
 }
 
@@ -63,10 +68,14 @@ function auditInfo(item) {
   const options = state.data.funnel;
   const f = item.filter;
   return `<details class="panel radar-math"><summary>Как посчитано</summary>
-    <p>${esc(options.windows[f.before].label)} и ${esc(options.windows[f.after].label)}. В каждом окне ${item.weeks} полных недель.
+    <p>${esc(options.windows[f.before].label)} и ${esc(options.windows[f.after].label)}.
+      ${item.coverage ? "Покрытие: " + item.coverage.before + " и " + item.coverage.after + " недель" +
+        (item.coverage.partial ? ", последняя неполная." : ", полные окна.") : "В каждом окне " + item.weeks + " полных недель."}
       Среднее недельных индексов. Для каждого семейства база 100 — 04.05–28.06.2026.</p>
     <p class="muted">Индекс не содержит абсолютных заказов, оплат или рублей. Для общего индекса магазина нужны веса по базовым объёмам.</p>
     <p class="by">${esc(item.source)}. ${item.jury ? "Покрытие демо включает согласованные агрегаты." : "Покрытие исходной книги: два семейства."}</p>
+    ${item.series ? item.evidence.filter(s=>s.id.startsWith("sales-")).map(s=>sourceLink(s,"Строки «Продаж» · "+(s.id==="sales-kes"?"Kaspersky":"Astra"))).join(" · ") +
+      " · " + sourceLink(item.definition,"Определение индекса") : ""}
   </details>`;
 }
 
@@ -78,24 +87,36 @@ function openDeviation() {
   const label = `Самостоятельные заказы ${item.family} ${i.change < 0 ? "↓" : "↑"} ${number(Math.abs(i.change))}%`;
   const scope = item.scope["периоды"].join(" и ");
   const relatedRuns = radarView.runs.filter(r=>r.mode==="release"&&deviationRef(r.filter)===deviationRef(f));
-  return `<div class="wide radar-page">${button("← Воронка", "page", "funnel", "link")}
-    <p class="eyebrow">Самостоятельный заказ · ${esc(scope)} · ${item.weeks} полных недель в каждом окне</p>
+  return `<div class="wide radar-page">${button("← Воронка", "funnel-back", deviationRef(f)+"~order", "link")}
+    <p class="eyebrow">Самостоятельный заказ · ${esc(scope)}${item.coverage?.partial ? " · включает неполную неделю" : ""}</p>
     <h1>${esc(label)}</h1><p class="lede">Индекс BI ${number(i.before)} → ${number(i.after)}. В выгрузке индексы двух семейств.</p>
+    ${item.series && !item.run ? `<form class="row actions" id="radar-start-form" data-mode="release">
+      <button class="primary">Исследовать Kaspersky с Qwen</button></form>` : ""}
+    ${messages()}${item.series && item.run ? projectResult(item.run) : ""}
     <section class="panel"><h2>Первичная сверка</h2>
       ${item.compare ? `<p>${esc(item.compare_name)} за те же недели · <strong>${signed(item.compare.change)}%</strong> (${number(item.compare.before)} → ${number(item.compare.after)}).</p>` : ""}
       <p>${esc(prettyDate(item.login).slice(0,5))} изменился вход, ${esc(prettyDate(item.released).slice(0,5))} выпущены фильтры подбора Kaspersky. Сопоставимость визитных долей через смену входа ограничена.</p>
       ${relatedCard(item.related)}<p class="by">Для Kaspersky нет ряда добавлений из конфигуратора. Причина снижения заказов пока открыта.</p>
+      ${item.reach ? `<p>Выбрали хотя бы одну опцию · ${ratio(item.reach)} визитов.
+        Покрытие ${item.reach.rows} из ${item.reach.expected_rows} сочетаний день × устройство.</p>` : ""}
+      ${item.reach_full && f.device === "all" ? `<p class="by">С запуска фильтров ${prettyDate(item.reach_full.since).slice(0,5)}
+        по ${prettyDate(state.data.store.coverage.metrics_to).slice(0,5)} · ${ratio(item.reach_full)} визитов по доступным строкам.</p>` : ""}
     </section>
+    ${item.series ? chartSeries(item.series,item.events,item.filter) : ""}
     <section class="panel"><h2>Что ещё могло повлиять</h2>
-      <ul class="radar-versions"><li>Сбой после выбора лицензии.</li><li>Пропуск события при работающей корзине.</li>
-      <li>Изменение состава визитов после смены входа.</li></ul>
+      <ul class="radar-versions"><li><strong>Сбой пути.</strong> Проверить фактическое содержимое корзины после выбора. Сейчас ряда добавлений KES нет.
+        ${item.customer_evidence ? sourceLink(item.customer_evidence[3],"Контрпример · продление Cloud онлайн") : ""}</li>
+        <li><strong>Потеря события.</strong> Возможна при работающей корзине. Пропуск Метрики сам по себе не объясняет снижение независимого индекса BI.
+        ${item.cart_definition ? sourceLink(item.cart_definition,"Определение счётчика корзины") : ""}</li>
+        <li><strong>Переход к менеджеру.</strong> Покупатель описал этот сценарий. Для подтверждения сдвига нужны два ряда заказов за те же недели.
+        ${item.customer_evidence ? sourceLink(item.customer_evidence[0],"Интервью · канал покупки KES") : ""}</li></ul>
       <p class="muted">Интервью и конкурентное исследование не подтверждают ни одну из этих причин для данного отклонения.</p>
     </section>
-    <form class="recommend fields" id="radar-start-form" data-mode="release">
+    ${!item.series ? `<form class="recommend fields" id="radar-start-form" data-mode="release">
       <label>Уточнение к исследованию<textarea name="question" maxlength="220" placeholder="Необязательно"></textarea></label>
       <div class="row"><button class="primary">Проверить связь с релизом конфигуратора</button></div>
       ${messages()}
-    </form>
+    </form>` : ""}
     ${relatedRuns.length ? `<section class="panel"><h2>История этого отклонения</h2>${relatedRuns.map(runRow).join("")}</section>` : ""}
     <details class="panel"><summary>Источники первичной сверки</summary>
       <div class="grid">${item.evidence.map(sourceCard).join("")}</div></details>
@@ -108,6 +129,7 @@ function radarLoading() {
 
 function runTitle(run) {
   return run.mode === "release" ? "Связь заказов Kaspersky с релизом подбора" :
+    run.mode === "office" ? "Предложение Office Home and Business 2024" :
     run.mode === "growth" ? state.data.growth.title : run.scope["семейство"] + " · " + run.scope["этап"];
 }
 
@@ -150,6 +172,7 @@ function resolutionView(result) {
     <p><strong>${esc(decisionNames[result.kind])}${result.linked ? " · " + esc(result.linked) : ""}</strong></p>
     ${result.note ? `<p>${esc(result.note)}</p>` : ""}
     ${result.followup ? `<p class="by">Условие последующей проверки · ${esc(result.followup)}</p>` : ""}
+    ${result.owner ? `<p class="by">Владелец · ${esc(result.owner)}. Вернуться ${prettyDate(result.due)}. Запись локальная.</p>` : ""}
     ${result.task ? button("Открыть " + taskLabel(result.task), "task", result.task, "primary") : ""}
   </section>`;
 }
@@ -157,7 +180,8 @@ function resolutionView(result) {
 function researchPage() {
   const run = detailForRoute();
   if (!run) return `<h1>Исследование</h1>${radarLoading()}`;
-  if (run.finding) return `<div class="wide"><h1>${esc(runTitle(run))}</h1>${findingButton(run.id)}</div>`;
+  if (run.finding) return `<div class="wide"><h1>${esc(runTitle(run))}</h1>${run.finding === state.data.growth.key ?
+    findingButton(run.id) : button("Открыть исходную находку","run",run.id,"link")}</div>`;
   const back = run.mode === "release" ? button("← Отклонение", "deviation", deviationRef(run.filter), "link") :
     run.mode === "growth" ? button("← Находка", "finding", state.data.growth.key, "link") :
     button("← Исследования", "page", "activity", "link");
@@ -257,7 +281,8 @@ function growthOperations(run) {
   return `<details class="panel"><summary>Что искала и читала Qwen · ${run.operations.length} операций</summary>
     <p class="by">Набор ${esc(run.corpus_version)} · запросы Qwen ранжируются с учётом исходного вопроса. Показаны первые совпадения.</p>
     <ol class="finding-operations">${run.operations.map(op => op.op === "search" ?
-    `<li><strong>${esc(op.purpose)}</strong><p>«${esc(op.query)}» · ${esc(op.type)} · проверено ${op.searched}, найдено ${op.hits.length ? op.hits.join(", ") : "0"}</p></li>` :
+    `<li><strong>${esc(op.purpose)}</strong><p>«${esc(op.query)}» · ${esc(op.type)} · проверено ${op.searched}, ${op.fallback ?
+      "точных совпадений нет, просмотр группы" : "найдено"} ${op.hits.length ? op.hits.join(", ") : "0"}</p></li>` :
     `<li><strong>Открыта запись ${esc(op.record.id)}</strong> · ${esc(op.record.version)}
       <div>${button(op.record.source, "fact", op.record.id, "link")}</div></li>`).join("")}</ol>
     </details>`;
@@ -312,6 +337,8 @@ function growthPage(id) {
         '<p class="by">Исследование доступно на защищённом LAN-стенде.</p>'}
       ${!run && item.version ? '<form id="radar-growth-form" class="row actions"><button class="primary">Исследовать с Qwen</button></form>' : ""}
     </section>
+    ${state.data.store ? `<section class="panel"><h2>Повтор из истории заказов</h2>
+      <p>${esc(state.data.store.initiatives.repeat.text)}</p>${sourceLink(state.data.store.initiatives.repeat,"Инициатива Softline · слайд 18")}</section>` : ""}
     ${run && !run.result ? growthResult(run) : ""}
     ${run?.resolution && item.version ? `<details class="panel" ${run.resolution.kind === "segment" ? "open" : ""}>
       <summary>Исследовать другой сегмент</summary><form id="radar-growth-form" class="fields">
@@ -348,6 +375,16 @@ function astraPage() {
 }
 
 function catalogPage(id) {
+  if (state.data.store && id?.split("~")[0]==="office") return officePage(id);
+  const product=state.data.store?.catalog[id];
+  if (product) return `<div class="wide">${button("← Ассортимент","page","catalog","link")}
+    <p class="eyebrow">${esc(product.group)}</p><h1>${esc(product.title)}</h1>
+    <section class="panel"><h2>Свидетельства по товару</h2>
+      ${product.sources.map(r=>`<p>${esc(r.text)} · ${sourceLink(r,"Открыть основание")}</p>`).join("")}
+      ${id==="cryptopro" ? sourceLink(state.data.store.initiatives.cryptopro) : ""}
+      ${id==="astra" ? button("Разобрать путь Astra","page","astra","secondary") : ""}
+      ${id==="kes" ? button("Открыть отклонение Kaspersky","deviation",deviationRef({...funnelView.filter || state.data.funnel.defaults,family:"kes",device:"all",audience:"all"}),"secondary") : ""}
+    </section>${product.prices.matched.length ? `<section class="panel"><h2>Ценовые замеры</h2>${productPrices(product.prices)}</section>` : ""}</div>`;
   const selected = state.data.catalog[id];
   if (selected) return `<div class="wide">${button("← Ассортимент", "page", "catalog", "link")}
     <p class="eyebrow">${esc(selected.stage)}</p><h1>${esc(selected.title)}</h1>
@@ -360,13 +397,13 @@ function catalogPage(id) {
 }
 
 function catalogMatches() {
-  const entries = [
+  const entries = state.data.store ? Object.entries(state.data.store.catalog).map(([id,item])=>[item.title,"catalog",id,item.group]) : [
     ["Kaspersky · самостоятельные заказы", "deviation", "kes.aug.oct.all.all"],
     ["Astra · прохождение подбора", "page", "astra"],
     ...Object.entries(state.data.catalog).map(([key,item]) => [item.title, "catalog", key])
   ];
   const query = (state.catalogQuery || "").trim().toLocaleLowerCase("ru");
-  return entries.filter(([title]) => title.toLocaleLowerCase("ru").includes(query))
+  return entries.filter(([title,,,group]) => (title + " " + (group || "")).toLocaleLowerCase("ru").includes(query))
     .map(([title, action, key]) => button(title, action, key, "block-row")).join("") ||
     '<p class="by" role="status">В доступном ассортименте совпадений нет.</p>';
 }
@@ -391,11 +428,12 @@ async function pollRadar() {
     renderRadarNotice();
     const [page, id] = route();
     if (["activity","work"].includes(page) && JSON.stringify(radarView.runs)!==previous) render();
-    const activeRun = page === "growth" ? detailForRoute()?.run : detailForRoute();
+    const detail = detailForRoute();
+    const activeRun = detail?.run || (page==="research" ? detail : null);
     const current = radarView.runs.find(run=>run.id===(activeRun?.id || id));
     if (page==="research" && current && detailForRoute()?.status!==current.status)
       void loadRadarDetail(radarDetailPath(page,id), true);
-    if (page === "growth" && activeRun && current && (activeRun.status !== current.status ||
+    if (["growth","deviation","catalog"].includes(page) && activeRun && current && (activeRun.status !== current.status ||
         (["queued","running"].includes(activeRun.status) && current.operation_count !== undefined &&
           activeRun.operations.length !== current.operation_count && !dialog.open)))
       void loadRadarDetail(radarDetailPath(page,id), true);
@@ -404,10 +442,13 @@ async function pollRadar() {
   } finally { radarView.polling = false; }
 }
 
-async function openRun(id, finding = radarView.runs.find(run => run.id === id)?.finding) {
-  if (finding) go("growth", findingRef(id));
-  else go("research",id);
+async function openRun(id, run=radarView.runs.find(item=>item.id===id)) {
   try {
+    run ||= await api("radar/run?" + new URLSearchParams({id}));
+    if (run.finding === "kes") go("deviation", deviationRef(run.filter)+"~"+id);
+    else if (run.finding === "office") go("catalog","office~"+id);
+    else if (run.finding) go("growth", findingRef(id));
+    else go("research",id);
     await api("radar/seen",{id});
     await pollRadar();
   } catch(error) { if (error.status===401) void boot(); }
@@ -415,9 +456,9 @@ async function openRun(id, finding = radarView.runs.find(run => run.id === id)?.
 
 async function startRadar(payload) {
   const run = await api("radar/start",payload);
-  if (run.finding && radarDetailPath(...route()) === radarDetailPath("growth", findingRef(run.id)))
-    await loadRadarDetail(radarDetailPath("growth", findingRef(run.id)), true);
-  await openRun(run.id, run.finding);
+  const path = radarDetailPath(...route());
+  if (detailForRoute()?.run?.id === run.id && path) await loadRadarDetail(path,true);
+  await openRun(run.id, run);
 }
 
 async function retryRadar() {

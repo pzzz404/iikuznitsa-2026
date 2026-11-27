@@ -22,7 +22,7 @@ const button = (label, name, value, cls = "secondary") =>
 const field = (label, name, value, attrs = "") =>
   `<label>${esc(label)}<input name="${name}" value="${esc(value)}" ${attrs}></label>`;
 const area = (label, name, value, max, extra = "") =>
-  `<label>${esc(label)}<textarea name="${name}" maxlength="${max}" ${extra}>${esc(value)}</textarea></label>`;
+  `<label>${esc(label)}<textarea name="${name}" aria-label="${esc(label)}" maxlength="${max}" ${extra}>${esc(value)}</textarea></label>`;
 
 async function api(path, data) {
   const res = await fetch("/api/" + path, data === undefined ? {} : {
@@ -41,6 +41,7 @@ async function refresh() {
 function route() {
   const [page, id] = location.hash.slice(1).split("/");
   const hasFunnel = state.data?.funnel;
+  if (page === "funnel" && hasFunnel) return [page,id];
   if (hasFunnel && radarPages.includes(page)) return [page, id];
   const available = pages.includes(page) && (page !== "funnel" || hasFunnel) &&
                     (page !== "signals" || !(state.data?.jury && hasFunnel));
@@ -73,13 +74,17 @@ function openSource(id) {
   const fact = (radarInfo?.result?.evidence || radarInfo?.evidence)?.find(f => f.id === id) ||
     radarInfo?.run?.operations.find(op => op.record?.id === id)?.record ||
     (known?.id === id ? known : null) || task?.study_data.evidence.find(f => f.id === id) ||
-    currentStudy()?.evidence.find(f => f.id === id) ||
+    currentStudy()?.evidence.find(f => f.id === id) || storeFacts().find(f=>f.id===id) ||
     allFacts().find(f => f.id === id);
   if (!fact) return;
   dialogBody.innerHTML = `<h2>${esc(fact.title)}</h2><p class="by">${esc(fact.source)}${fact.version ? " · " + esc(fact.version) : ""}${fact.date ? " · " + prettyDate(fact.date) : ""}</p>
     ${fact.cohort ? `<p class="by">Когорта · ${esc(fact.cohort)}${fact.role ? " · " + esc(fact.role) : ""}</p>` : ""}
     ${fact.derived ? '<p class="by">Сводка по указанным записям</p>' : ""}
     <blockquote>${esc(fact.text)}</blockquote>
+    ${fact.rule ? `<p><strong>Правило сигнала</strong> · ${esc(fact.rule)}</p>` : ""}
+    ${fact.scope ? `<p class="by">Разрез · ${esc(fact.scope)}</p>` : ""}
+    ${fact.note ? `<p class="by">${esc(fact.note)}</p>` : ""}
+    ${fact.releases?.length ? `<p>Связанные события · ${fact.releases.map(esc).join(", ")}</p>` : ""}
     ${fact.image ? `<img alt="Фрагмент интерфейса магазина" src="/images/${esc(fact.image)}">` : ""}`;
   dialog.showModal();
 }
@@ -159,8 +164,13 @@ function backlog(id) {
       ${task.radar ? `<p><strong>Решение PM</strong> · ${esc(decisionNames[task.radar.kind])}${task.radar.linked ? " · " + esc(task.radar.linked) : ""}</p>
         ${task.radar.note ? `<p>${esc(task.radar.note)}</p>` : ""}
         <p class="by">Условие последующей проверки · ${esc(task.radar.followup)}</p>
-        ${task.radar.finding ? findingButton(task.radar.id) : button("Открыть исследование", "run", task.radar.id, "link")}` : ""}
+        ${task.radar.owner ? `<p class="by">Владелец · ${esc(task.radar.owner)}. Вернуться ${prettyDate(task.radar.due)}.</p>` : ""}
+        ${task.radar.finding ? button("Открыть исходную находку","run",task.radar.id,"link") : button("Открыть исследование", "run", task.radar.id, "link")}` : ""}
       <div class="row actions">${button("Открыть связанную проверку", "check", id, "primary")}</div>
+      ${task.radar?.linked ? `<details><summary>Локальный черновик для Redmine · ${esc(task.radar.linked)}</summary>
+        <p>${esc(task.title)}</p><p>${esc(task.criterion)}</p>
+        <p>Основания · ${task.study_data.evidence.filter(row=>task.study_data.selected.includes(row.id)).map(r=>sourceLink(r)).join(" · ")}</p>
+        <p class="by">Локальная запись в PM Radar.</p></details>` : ""}
       ${messages()}</section>
     <section class="context"><h2>Свидетельства в задаче</h2><div class="grid">${task.study_data.evidence.map(sourceCard).join("")}</div></section>
     <details class="panel"><summary>Изменить задачу</summary>
@@ -174,7 +184,12 @@ function backlog(id) {
       <span class="evidence-id">${taskLabel(t.id)}</span><strong>${esc(t.title)}</strong></button>`).join("") ||
       '<p class="muted">Здесь появятся сохранённые задачи.</p>'}</section>
     <section class="panel"><h2>${state.data.sample ? "Типовые задачи для демонстрации" : "Исходные задачи из Excel"}</h2>
-      ${state.data.imported.map(t => `<p class="block-row"><span class="evidence-id">${esc(t.id)}</span><strong>${esc(t.title)}</strong> · <span class="muted">${esc(t.status)}</span></p>`).join("")}</section></div>`;
+      ${state.data.imported.map(t => {
+        const original=state.data.store?.tasks.find(row=>row.id===t.id);
+        return `<p class="block-row"><span class="evidence-id">${esc(t.id)}</span>
+          ${original ? sourceLink({...original,id:original.source_id}) : `<strong>${esc(t.title)}</strong>`}
+           · <span class="muted">${esc(t.status)}</span></p>`;
+      }).join("")}</section></div>`;
 }
 
 function checkResult(task) {
@@ -193,14 +208,14 @@ function checkResult(task) {
 
 function checks(id) {
   const task = state.data.tasks.find(t => t.id === id);
-  if (task?.study_data.topic === "funnel" && task.study_data.stage !== "growth") return eventCheck(task);
+  if (task?.study_data.topic === "funnel" && !["growth","offer"].includes(task.study_data.stage)) return eventCheck(task);
   if (!task) return `<div class="wide"><h1>Проверки</h1><p class="lede">Планы и решения после релиза по задачам бэклога.</p><section class="panel">
     ${state.data.tasks.map(t => button(taskLabel(t.id) + " · " + t.title, "check", t.id, "block-row")).join("") ||
     '<p>Сначала сохраните задачу из разбора.</p>'}</section></div>`;
   const p = task.plan;
   return `<div class="wide">${button("← " + taskLabel(id), "task", id, "link")}<p class="eyebrow">Проверка гипотезы · ${taskLabel(id)}</p>
     <h1>Эффект после релиза</h1><p class="lede">${esc(task.title)}</p>
-    ${task.radar?.finding ? `<div class="row">${findingButton(task.radar.id)} ${button("Моя работа", "page", "work", "link")}</div>` : ""}
+    ${task.radar?.finding ? `<div class="row">${button("Открыть исходную находку","run",task.radar.id,"link")} ${button("Моя работа", "page", "work", "link")}</div>` : ""}
     <section class="panel"><h2>До релиза</h2><p>${esc(task.criterion)}</p>
       ${task.radar?.followup ? `<p><strong>Условие повторной проверки</strong> · ${esc(task.radar.followup)}</p>` : ""}
       <p class="by">Сначала собрать базовый уровень. Для A/B считать исходы в контрольной и тестовой группах за одно окно.</p>
@@ -268,7 +283,7 @@ function usagePage() {
     ${journal ? `<section class="recommend"><h2>Расход на показанные вызовы</h2>${usageSummary(journal.usage)}</section>
       <section class="panel"><h2>Последние вызовы</h2><div class="table-wrap"><table><thead><tr><th>Вызов</th><th>Сценарий</th><th>Модель</th><th>Вход</th><th>Выход</th><th>Время</th>${state.data.external ? "<th>Списано, USD</th>" : ""}<th>Статус</th></tr></thead>
       <tbody>${journal.calls.map(r => `<tr><td>#${r.id}</td><td>${esc(state.data.topics[r.scenario]?.title || r.scenario)}
-      ${r.finding ? `<div>${findingButton(r.study)}</div>` : ""}</td><td>${esc(r.model)}</td><td>${r.prompt_tokens ?? "—"}</td><td>${r.completion_tokens ?? "—"}</td><td>${r.elapsed_ms == null ? "—" : seconds(r.elapsed_ms)}</td>
+      ${r.finding ? `<div>${button("Открыть исходную находку","run",r.study,"link")}</div>` : ""}</td><td>${esc(r.model)}</td><td>${r.prompt_tokens ?? "—"}</td><td>${r.completion_tokens ?? "—"}</td><td>${r.elapsed_ms == null ? "—" : seconds(r.elapsed_ms)}</td>
       ${state.data.external ? `<td>${esc(r.actual_cost ?? "—")}</td>` : ""}<td>${esc(callStatus[r.status])}</td></tr>`).join("")}</tbody></table></div></section>` : '<p class="feedback">Открываю журнал…</p>'}
       <p class="by footer">${state.data.external ? "Стоимость берётся из ответа OpenRouter." : "Локальная плата за API · 0 RUB. Электричество и амортизация Beelink отдельно, замера нет."} Токены разработки Codex в этот журнал не входят.</p></div>`;
 }
@@ -276,6 +291,7 @@ function usagePage() {
 function render() {
   if (!state.data) return;
   const [page, id] = route();
+  if (page==="funnel") restoreFunnelView(id);
   nav.hidden = false;
   document.querySelector("#task-count").textContent = state.data.tasks.length;
   for (const item of nav.querySelectorAll("button")) {
@@ -287,7 +303,7 @@ function render() {
     else item.removeAttribute("aria-current");
   }
   app.innerHTML = {funnel: showFunnel, signals, backlog, checks, sources, usage: usagePage,
-    deviation:openDeviation, research:researchPage, activity:activityPage, work:workPage, astra:astraPage, growth:growthPage, catalog:catalogPage}[page](id);
+    deviation:openDeviation, research:researchPage, activity:activityPage, work:workPage, astra:astraPage, growth:growthPage, catalog:catalogPage,lk:lkPage}[page](id);
   const detailPath = radarDetailPath(page,id);
   if (detailPath && !state.error && !detailForRoute()) void loadRadarDetail(detailPath);
   if (page === "funnel" && !funnelView.report && !state.error) void loadFunnel();
@@ -331,10 +347,11 @@ document.addEventListener("click", async event => {
   const d = event.target.closest("button")?.dataset;
   if (!state.data || !d) return;
   if (d.page) { state.journal = null; go(d.page); }
-  if (d.task) go("backlog", d.task);
+  if (d.task) { if (dialog.open) dialog.close(); go("backlog", d.task); }
   if (d.check) go("checks", d.check);
   if (d.fact) openSource(d.fact);
   if (d.deviation) go("deviation", d.deviation);
+  if (d.funnelBack) go("funnel",d.funnelBack);
   if (d.catalog) go("catalog", d.catalog);
   if (d.finding) go("growth", d.finding);
   if (d.findingDecision !== undefined) document.querySelector("#finding-decision")?.focus();
@@ -345,6 +362,7 @@ document.addEventListener("click", async event => {
   }
   if (d.funnelStage) {
     funnelView.stage = d.funnelStage;
+    rememberFunnelView();
     state.error = "";
     render();
   }
@@ -353,7 +371,11 @@ document.addEventListener("click", async event => {
     const detail = detailForRoute();
     const item = detail?.related || detail?.result?.related || detail?.result?.candidate;
     if (item?.id === d.radarRelated) {
-      dialogBody.innerHTML = `<h2>${esc(item.id)} · ${esc(item.title)}</h2><p>${esc(item.status)}</p><p class="by">Softline v17 · Бэклог_задачи</p>`;
+      const original=state.data.store?.tasks.find(t=>t.id===item.id);
+      const amendments=state.data.tasks.filter(task=>task.radar?.linked===item.id);
+      dialogBody.innerHTML = `<h2>${esc(item.id)} · ${esc(item.title)}</h2><p>${esc(item.status)}</p>
+        <p>${esc(original?.text || "")}</p><p class="by">${esc(original?.source || "Softline v17 · Бэклог_задачи")}</p>
+        ${amendments.length ? '<h3>Локальные дополнения</h3>'+amendments.map(t=>button(taskLabel(t.id)+" · "+t.title,"task",t.id,"link")).join("") : ""}`;
       dialog.showModal();
     }
   }
@@ -381,6 +403,7 @@ document.addEventListener("click", async event => {
 
 app.addEventListener("change", event => {
   if (event.target.matches("#funnel-filters select")) changeFunnelFilter(event.target.name, event.target.value);
+  if (event.target.matches("#funnel-filters [name=full_weeks]")) changeFunnelFilter("after",event.target.checked ? "oct" : "oct_partial");
 });
 app.addEventListener("input", event => {
   if (event.target.id === "catalog-query") {
@@ -399,7 +422,7 @@ app.addEventListener("submit", async event => {
   state.error = state.notice = "";
   try {
     if (form.id === "radar-start-form") {
-      await startRadar({...detailForRoute().filter, mode:"release", question:fields.question});
+      await startRadar({...detailForRoute().filter, mode:form.dataset.mode, question:fields.question});
     } else if (form.id === "radar-growth-form") {
       await startRadar({mode:"growth", question:fields.question || ""});
     } else if (form.id === "radar-astra-form") {

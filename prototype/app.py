@@ -16,6 +16,7 @@ import openrouter
 import funnel
 import radar
 import growth_research
+from store_history import sales_basis
 from evidence import ROOT, TOPICS, facts_and_tasks
 from inference import DECISIONS, ModelBusy, study, study_funnel
 from workflow import (EVENT_RESULTS, event_defaults, experiment, import_research, now, save_check, save_event_check, setup_workflow,
@@ -29,6 +30,7 @@ LOCAL = Path(os.getenv("PM_DATA_DIR", Path.home() / ".local/share/pm-hackathon")
 INVITES = os.getenv("PM_INVITES")
 PUBLIC_ORIGIN = os.getenv("PM_PUBLIC_ORIGIN")
 EVIDENCE_FILE = os.getenv("PM_EVIDENCE_FILE")
+STORE_FILE = os.getenv("PM_STORE_FILE")
 LIMIT = 4 if openrouter.ENABLED else (int(os.getenv("PM_MODEL_DAILY_LIMIT", "16")) if INVITES else 0)
 TAG = "сгенерирована ИИ-помощником"
 IMAGES = {"card": "02-crypto-card.png", "cart": "03-guest-basket.png"}
@@ -53,7 +55,7 @@ def connect():
 
 
 def setup():
-    global FACTS, IMPORTED, CRM, FUNNEL, RADAR_WAKE, RESEARCH_CORPUS
+    global FACTS, IMPORTED, CRM, FUNNEL, RADAR_WAKE, RESEARCH_CORPUS, STORE
     if openrouter.ENABLED and (INVITES or not EVIDENCE_FILE or not os.getenv("PM_DATA_DIR")
                                or LOCAL.resolve() == (Path.home() / ".local/share/pm-hackathon").resolve()):
         raise RuntimeError("Для OpenRouter нужен отдельный локальный стенд с синтетическими данными")
@@ -72,6 +74,10 @@ def setup():
         FACTS, IMPORTED = facts_and_tasks()
         FUNNEL = funnel.load_history()
     CRM = cohort_balances(json.loads((ROOT / "demo/crm/synthetic_sales.json").read_text()))
+    STORE = json.loads(Path(STORE_FILE).read_text()) if STORE_FILE and FUNNEL and not openrouter.ENABLED else None
+    if STORE:
+        FUNNEL = STORE["history"]
+        IMPORTED = [{"task_id":row["id"], "title":row["title"], "status":row["status"]} for row in STORE["tasks"]]
     RESEARCH_CORPUS = growth_research.load() if FUNNEL and not openrouter.ENABLED else []
     LOCAL.mkdir(parents=True, exist_ok=True, mode=0o700)
     with connect() as db:
@@ -83,7 +89,7 @@ def setup():
         setup_workflow(db)
         if FUNNEL:
             radar.setup(db)
-    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS) if FUNNEL else None
+    RADAR_WAKE = radar.worker(connect, LIMIT, RESEARCH_CORPUS, STORE) if FUNNEL else None
 
 
 def uploaded(db):
@@ -99,15 +105,19 @@ def task_details(db, row):
     task["usage"] = usage_sum(task["calls"])
     stored = db.execute("SELECT payload FROM checks WHERE task=?", (task["id"],)).fetchone()
     is_funnel = record["topic"] == "funnel"
-    event_mode = is_funnel and record.get("stage") != "growth"
-    metric = (TOPICS["repeat"]["measure"] if is_funnel else TOPICS[record["topic"]]["measure"])
+    event_mode = is_funnel and record.get("stage") not in {"growth","offer"}
+    metric = ("Доля оплаченных подходящих заказов Office" if record.get("stage") == "offer"
+              else TOPICS["repeat"]["measure"] if is_funnel else TOPICS[record["topic"]]["measure"])
     defaults = event_defaults() if event_mode else verification_defaults(metric)
+    if record.get("stage") == "offer":
+        defaults["guard"] = "Доля заказов ниже согласованной минимальной маржи"
     task["plan"] = json.loads(stored[0]) if stored else defaults
     task["result"] = None if event_mode else experiment(task["plan"])
     if is_funnel and FUNNEL:
-        detail = db.execute("SELECT id,mode,resolution FROM radar_runs WHERE study=? AND resolution IS NOT NULL", (task["study"],)).fetchone()
+        detail = db.execute("SELECT id,mode,input,resolution FROM radar_runs WHERE study=? AND resolution IS NOT NULL", (task["study"],)).fetchone()
         if detail:
             task["radar"] = {"id": detail["id"], "mode": detail["mode"], "finding": record.get("finding"),
+                             "filter": json.loads(detail["input"])["filter"],
                              **json.loads(detail["resolution"])}
     return task
 
@@ -212,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
         path = target.path
         static = {"/": ("index.html", "text/html"), "/style.css": ("style.css", "text/css"),
                   "/ui.js": ("ui.js", "application/javascript"), "/funnel-ui.js": ("funnel-ui.js", "application/javascript"),
-                  "/radar-ui.js": ("radar-ui.js", "application/javascript")}
+                  "/radar-ui.js": ("radar-ui.js", "application/javascript"), "/store-ui.js": ("store-ui.js", "application/javascript")}
         if path in static:
             name, kind = static[path]
             return self.reply((HERE / name).read_bytes(), kind + "; charset=utf-8")
@@ -242,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "external": openrouter.ENABLED, "funnel": funnel.options(FUNNEL),
                                    "catalog": radar.CATALOG if FUNNEL else {},
                                    "growth": growth_research.finding(RESEARCH_CORPUS) if FUNNEL else None,
+                                   "store": ({k: STORE[k] for k in ("catalog","coverage","threshold","alerts","releases",
+                                             "definitions","tasks","initiatives","lk")} if STORE else None),
                                    "event_results": EVENT_RESULTS,
                                    "today": date.today().isoformat()})
         if path == "/api/funnel" and FUNNEL:
@@ -254,10 +266,20 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 args = dict(parse.parse_qsl(target.query, max_num_fields=12))
                 if path == "/api/radar/deviation":
-                    result = radar.deviation(FUNNEL, args)
+                    result = radar.deviation(FUNNEL, args, STORE)
                     result.pop("case")
+                    if STORE:
+                        with connect() as db:
+                            result["run"] = radar.project_run(db, "kes", result["filter"], args.get("run"))
                     return self.reply(result)
                 with connect() as db:
+                    if STORE and path == "/api/radar/office":
+                        return self.reply({"run":radar.project_run(db,"office",{},args.get("run"))})
+                    if STORE and path == "/api/radar/orders":
+                        params = funnel.selection(args)
+                        windows = [funnel.WINDOWS[params[k]] for k in ("before","after")]
+                        return self.reply({"series":STORE["sales"][params["family"]],
+                                           "evidence":[sales_basis(STORE,key,windows) for key in funnel.FAMILIES]})
                     if path == "/api/radar/runs":
                         return self.reply(radar.recent(db))
                     if path == "/api/radar/finding":
@@ -326,7 +348,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/funnel/study" and FUNNEL:
                 return self.reply(study_funnel(funnel.study_case(FUNNEL, data), connect, LIMIT))
             if path == "/api/radar/start" and FUNNEL:
-                mode, case = radar.make_case(FUNNEL, data, RESEARCH_CORPUS)
+                mode, case = radar.make_case(FUNNEL, data, RESEARCH_CORPUS, STORE)
                 with connect() as db:
                     run = radar.enqueue(db, mode, case)
                 RADAR_WAKE.set()
@@ -341,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not accessible_study(existing):
                         raise ValueError("Задача не найдена")
                     record = json.loads(existing[0])
-                    is_funnel = record["topic"] == "funnel" and record.get("stage") != "growth"
+                    is_funnel = record["topic"] == "funnel" and record.get("stage") not in {"growth","offer"}
                     plan = save_event_check(db, task_id, data) if is_funnel else save_check(db, task_id, data)
                     response = {"plan": plan, "result": None if is_funnel else experiment(plan)}
                 elif path == "/api/defer" and not (INVITES and FUNNEL):

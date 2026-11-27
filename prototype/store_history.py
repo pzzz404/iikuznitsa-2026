@@ -39,9 +39,9 @@ def project_catalog():
     ppt, ppt_version = open_source("*.pptx")
     fourth, eighteenth = slide(ppt, 4), slide(ppt, 18)
     catalog, prices = {}, {}
-    with_workbook = load_workbook(path, read_only=True, data_only=True)
+    book = load_workbook(path, read_only=True, data_only=True)
     try:
-        basket = with_workbook["0_Конкуренты_Продукты"]
+        basket = book["0_Конкуренты_Продукты"]
         for key, (number, row) in zip(PRODUCT_IDS, enumerate(basket.iter_rows(
                 min_row=5, max_row=14, min_col=5, max_col=8, values_only=True), 5), strict=True):
             name, priority, count, group = row
@@ -53,7 +53,7 @@ def project_catalog():
                                        "Оборот / заказы / маржа: " + " / ".join(abc), type="Презентация"))
             catalog[key] = {"title": name, "group": group, "sources": sources}
             prices[key] = []
-        price_sheet = with_workbook["03_Цена"]
+        price_sheet = book["03_Цена"]
         by_name = {item["title"]: key for key, item in catalog.items()}
         for number, row in enumerate(price_sheet.iter_rows(min_row=5,max_col=14,values_only=True), 5):
             site, name, sku, _, match, _, edition, term, cost, store, _, promo, terms, checked = row
@@ -67,13 +67,13 @@ def project_catalog():
                                        f"{name} · {cost:g} ₽; {store_price} · {match} · {details}",
                                        type="Замер цены", kind="competitor", amount=cost, store=store, match=match,
                                        conditions=details, date=when))
-        invoice = with_workbook["04_Покупка_Счет"]["F43"].value
+        invoice = book["04_Покупка_Счет"]["F43"].value
         catalog["office"]["invoice"] = address(path, version, "04_Покупка_Счет", "A43:N43",
             "Самостоятельный счёт Office", f"Один исследовательский проход в Store 27.10.2026. "
             f"Самостоятельное получение счёта за {invoice} мин. Исход оплаты отсутствует.",
             type="Осмотр", kind="competitor")
     finally:
-        with_workbook.close()
+        book.close()
     for key, item in catalog.items():
         offers = prices[key]
         matched = [offer for offer in offers if offer["match"] == "Да" and isinstance(offer["store"], (int,float))]
@@ -112,7 +112,8 @@ def export_history():
     path, version = open_source("Датасет*.xlsx")
     book = load_workbook(path, read_only=True, data_only=True)
     history = load_history()
-    source = lambda sheet, at, title, text, **kw: address(path, version, sheet, at, title, text, **kw)
+    def source(sheet, at, title, text, **fields):
+        return address(path, version, sheet, at, title, text, **fields)
     try:
         sales = {family: [] for family in SALES_NAMES.values()}
         covered_to = None
@@ -150,13 +151,16 @@ def export_history():
             alerts[family] = [[a,b] for a,b in zip(entries, entries[1:]) if not b["partial"] and
                               a["value"] < threshold and b["value"] < threshold and
                               date.fromisoformat(b["date"]) - date.fromisoformat(a["date"]) == timedelta(days=7)]
-        lk, lk_rows, reach_rows = Counter(), {}, {}
+        lk, lk_rows, reach_rows, reach_full = Counter(), {}, {}, Counter()
+        filters_day = next(r["date"] for r in releases if r["title"] == "R-09")
         max_metric_date = ""
         for number, row in enumerate(read_rows(book["Метрики_данные"]), 2):
             day, metric = str(row["date"])[:10], row["metric_id"]
             max_metric_date = max(max_metric_date, day)
             if metric == "cfg_reach_rate" and row["product"] == "Конфигуратор Kaspersky" and row["segment"] in ("desktop","mobile","tablet"):
                 reach_rows.setdefault(day, []).append(number)
+                if day >= filters_day:
+                    reach_full.update(json.loads(row["detail_json"]))
             if "2026-10-26" <= day <= "2026-11-22" and metric in ("lk_reco_shown_share","lk_reco_status_visits","lk_reco_ctr"):
                 lk_rows.setdefault(metric, []).append(number)
                 if metric == "lk_reco_status_visits":
@@ -171,13 +175,15 @@ def export_history():
     return {"history": history, "sales": sales, "definitions": definitions, "releases": releases, "tasks": tasks,
             "coverage": {"sales_to": covered_to, "last_full": last_full, "metrics_to": max_metric_date},
             "alerts": alerts, "threshold": threshold, "catalog": catalog, "initiatives": initiatives,
-            "lk": {"counts": dict(lk), "sources": lk_sources}, "reach_rows": reach_rows, "interviews": interview_records(),
+            "lk": {"counts": dict(lk), "sources": lk_sources}, "reach_rows": reach_rows,
+            "reach_full": {"n":reach_full["configurator_visits"],"d":reach_full["family_visits"],"since":filters_day},
+            "interviews": interview_records(),
             "book": path.name, "version": version}
 
 
 def sales_basis(store, family, windows):
-    points = [point for point in store["sales"][family] if point["date"] in
-              {day for window in windows for day in weeks(window)}]
+    dates = {day for window in windows for day in weeks(window)}
+    points = [point for point in store["sales"][family] if point["date"] in dates]
     ids = ", ".join(str(point["row"]) for point in points)
     return {"id": "sales-" + family, "title": "Недели, использованные в расчёте", "type": "Индекс BI",
             "source": f'{store["book"]} · Продажи · строки {ids}', "version": store["version"],

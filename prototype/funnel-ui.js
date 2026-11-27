@@ -6,7 +6,7 @@ const funnelStages = {
 };
 
 function selectField(label, key, choices, value, attrs = "") {
-  return `<label>${esc(label)}<select name="${key}" ${attrs}>${Object.entries(choices).map(([id, text]) =>
+  return `<label>${esc(label)}<select name="${key}" aria-label="${esc(label)}" ${attrs}>${Object.entries(choices).map(([id, text]) =>
     `<option value="${esc(id)}" ${id === value ? "selected" : ""}>${esc(text)}</option>`).join("")}</select></label>`;
 }
 
@@ -14,11 +14,16 @@ async function loadFunnel() {
   if (funnelView.loading || !state.data.funnel) return;
   funnelView.loading = true;
   funnelView.filter ||= {...state.data.funnel.defaults};
+  const query = new URLSearchParams(funnelView.filter).toString();
+  const current = () => new URLSearchParams(funnelView.filter).toString() === query;
   try {
-    funnelView.report = await api("funnel?" + new URLSearchParams(funnelView.filter));
+    const [report, storeData] = await Promise.all([
+      api("funnel?" + query), state.data.store ? api("radar/orders?" + query) : null
+    ]);
+    if (current()) funnelView.report = {...report, storeData};
   } catch (error) {
     if (error.status === 401) return boot();
-    state.error = error.message;
+    if (current()) state.error = error.message;
   } finally {
     funnelView.loading = false;
   }
@@ -28,16 +33,32 @@ async function loadFunnel() {
 function changeFunnelFilter(key, value) {
   if (funnelView.loading || funnelView.waiting) return;
   funnelView.filter[key] = value;
-  const {windows} = state.data.funnel;
-  if (key === "before" || key === "after") {
-    const slot = key === "before" ? "after" : "before";
-    if (windows[funnelView.filter[slot]].weeks !== windows[value].weeks)
-      funnelView.filter[slot] = Object.keys(windows).find(id => windows[id].slot === slot && windows[id].weeks === windows[value].weeks);
-  }
+  const f = funnelView.filter;
+  if (key === "before" && (value === "oct12") !== (f.after === "oct19")) f.after = value === "oct12" ? "oct19" : "oct";
+  if (key === "after" && (value === "oct19") !== (f.before === "oct12")) f.before = value === "oct19" ? "oct12" : "aug";
+  rememberFunnelView();
   funnelView.report = null;
   state.error = "";
   void loadFunnel();
   render();
+}
+
+function rememberFunnelView() {
+  if (state.data.store) history.replaceState(null,"","#funnel/"+deviationRef(funnelView.filter)+"~"+funnelView.stage);
+}
+
+function restoreFunnelView(ref) {
+  if (!ref || !state.data.store) return;
+  const [raw,stage] = ref.split("~");
+  const choice=deviationArgs(raw);
+  const model=state.data.funnel;
+  if (!Object.hasOwn(model.families,choice.family) || !model.windows[choice.before] || !model.windows[choice.after] ||
+      !model.devices[choice.device] || !model.audiences[choice.audience]) return;
+  if (funnelStages[stage]) funnelView.stage=stage;
+  if (deviationRef(funnelView.filter || model.defaults) !== raw) {
+    funnelView.filter=choice;
+    funnelView.report=null;
+  }
 }
 
 function ratio(pair) {
@@ -81,6 +102,8 @@ function measuredDetails(r) {
         ? '<p class="muted">Пошаговые числа Astra в v17 собраны по всем устройствам. Поля устройства у них нет.</p>' : ""}
      ${!columns && !stepColumns ? `<p class="muted">${r.jury ? "Для этого среза нет согласованных счётчиков в демовыборке." : "В выбранных периодах нет пары счётчиков."}</p>` : ""}
      <p class="by">${esc(r.order_source)}. BI индекс не связывает этапы покупки и не содержит оплаты.</p>
+     ${state.data.store ? Object.values(state.data.store.definitions).filter(d=>/cfg_/.test(d.source) || /корзин|конфигуратор/i.test(d.title))
+       .slice(0,6).map(d=>sourceLink(d)).join(" · ") : ""}
      <p class="by">Ветки самостоятельного счёта, менеджера и повторной покупки требуют собственной связки событий.</p>
   </details>`;
 }
@@ -98,7 +121,8 @@ function ordersDetail(report) {
       ${entries.map(([family,item])=>`<tr><td>${esc(state.data.funnel.families[family])}</td>
       <td>${number(item.before)}</td><td>${number(item.after)}</td><td>${signed(item.change)}%</td></tr>`).join("")}
     </tbody></table></div><p class="by">${esc(report.order_source)}. База 100 · 04.05–28.06.2026 для каждого семейства.</p>
-    ${weekly.length ? `<div class="radar-weekly">${weekly.map(row=>`<div><span>${esc(prettyDate(row.date).slice(0,5))}</span>
+    ${report.storeData ? `<p class="by">${report.storeData.evidence.map((row,i)=>sourceLink(row,"Открыть основание · "+["Kaspersky","Astra"][i])).join(" · ")}</p>` :
+      weekly.length ? `<div class="radar-weekly">${weekly.map(row=>`<div><span>${esc(prettyDate(row.date).slice(0,5))}</span>
       <meter min="0" max="${max}" value="${row.value}" aria-label="Индекс заказов"></meter><strong>${number(row.value)}</strong></div>`).join("")}</div>` :
       "<p class='muted'>Недельный ряд остаётся в закрытой книге. В демо доступны средние индексы согласованных окон.</p>"}
   </details>`;
@@ -119,17 +143,17 @@ function stageSummary(r, chosen, comparator, other, status, gate) {
       <p>Индекс BI <strong>${number(chosen.before)} → ${number(chosen.after)}</strong>.
         ${comparator ? `${esc(model.families[other])} ${signed(comparator.change)}% за те же недели.` : ""}</p>
       <p class="by">${esc(model.windows[r.filter.before].label)} и ${esc(model.windows[r.filter.after].label)}.
-        ${model.windows[r.filter.before].weeks} полных недель в каждом окне. Индексы двух семейств.</p>
+        Покрытие: ${r.coverage.before} и ${r.coverage.after} недель${r.coverage.partial ? ", последняя неполная":""}. Индексы двух семейств.</p>
     </div><div>${r.filter.family==="kes" ? button("Открыть отклонение", "deviation", deviationRef(r.filter), "primary") :
       button("Где меняется прохождение?", "page", "astra", "secondary")}</div></section>`;
   }
   const stageInfo = {
     license: {title:"Используют ли подбор?", text:step ? `Шаг 1 → 2 · ${cellRatio(step)}` :
-      reach ? `Визиты к конфигуратору / визиты страниц семейств · ${cellRatio(reach)}. Календарные дни и устройства покрыты не полностью.` : "Нет счётчиков шагов выбора.",
+      reach ? `Выбрали хотя бы одну опцию / визиты страниц семейства · ${cellRatio(reach)}.` : "Нет счётчиков шагов выбора.",
       note:r.filter.family==="kes" ? "У Kaspersky фильтры без последовательных шагов. Сравнение использования до запуска недоступно." :
         "Проверить вход в подбор и переходы отдельно.", action:`<div class="row">
           ${r.filter.family==="kes" ? defaultAction("Проверить использование фильтров") : ""}
-          ${button("Где меняется прохождение?", "page", "astra", "secondary")}</div>`},
+          ${r.filter.family==="astra" ? button("Где меняется прохождение?", "page", "astra", "secondary") : ""}</div>`},
     cart: {title:"Добавляли ли товар в корзину?", text:pair ? `Визиты с добавлением / визиты с открытием · ${cellRatio(pair)}` : r.cart_gap,
       note:r.filter.family==="kes" ? "Связанная T-08 касается передачи событий. Первый шаг — сверить действие и запись." :
         "Доля относится к открытиям конфигуратора в доступных строках.", action:defaultAction("Сверить события корзины")},
@@ -160,7 +184,8 @@ function showFunnel() {
   const r = funnelView.report;
   const f = funnelView.filter || model.defaults;
   const windows = Object.entries(model.windows);
-  const periodOptions = slot => Object.fromEntries(windows.filter(([, item]) => item.slot === slot).map(([id, item]) =>
+  const periodOptions = slot => Object.fromEntries(windows.filter(([id, item]) => item.slot === slot &&
+    (!item.partial || f.after==="oct_partial") && (f.after!=="oct_partial" || slot!=="after" || item.partial || id==="oct19")).map(([id, item]) =>
     [id, `${item.label} · ${item.weeks === 1 ? "1 неделя" : item.weeks + " недель"}`]));
   const chosen = r?.orders[f.family];
   const other = f.family === "kes" ? "astra" : "kes";
@@ -174,18 +199,19 @@ function showFunnel() {
   const gate = funnelView.loading || funnelView.waiting || !r || unavailable;
   const lock = funnelView.loading || funnelView.waiting ? "disabled" : "";
   const headline = `<div class="funnel-title"><div><p class="eyebrow">${r?.jury ? "Агрегаты для жюри" : "История магазина · Softline v17"}</p>
-    <h1>Воронка покупок</h1></div><p class="muted">Приоритет разработки после релиза</p></div>`;
+    <h1>Воронка покупок</h1></div><p class="muted">${state.data.store ? esc(coverageCaption(state.data.store)) : "Приоритет разработки после релиза"}</p></div>`;
   const filter = `<form id="funnel-filters" class="funnel-filters panel" aria-label="Фильтры воронки">
     ${selectField("Товарное семейство", "family", model.families, f.family, lock)}
     ${selectField("Первый период", "before", periodOptions("before"), f.before, lock)}
     ${selectField("Второй период", "after", periodOptions("after"), f.after, lock)}
     ${selectField("Устройство", "device", model.devices, f.device, lock)}
     ${selectField("Покупатели", "audience", model.audiences, f.audience, lock)}
+    ${state.data.store && f.after!=="oct19" ? `<label class="toggle"><input name="full_weeks" type="checkbox" ${f.after==="oct_partial"?"":"checked"} ${lock}>Только полные недели</label>` : ""}
   </form>`;
   if (!r || funnelView.loading) return `${headline}${filter}${messages()}${!state.error ? '<p class="feedback" role="status">Читаю счётчики…</p>' : ""}`;
   const cells = {
     license: [unavailable ? "Пробел учёта" : step || reach ? "Есть счётчики" : "Пробел учёта",
-              step ? `Шаг 1 → 2 · ${cellRatio(step)}` : reach ? `Вход в конфигуратор · ${cellRatio(reach)}` :
+              step ? `Шаг 1 → 2 · ${cellRatio(step)}` : reach ? `Выбрали хотя бы одну опцию · ${cellRatio(reach)}` :
               "Нет счётчиков шагов выбора для этого среза.", step || reach ? "neutral" : "gap"],
     cart: [cart ? "Есть счётчики" : "Пробел учёта",
            cart ? `Визиты с добавлением / с открытием · ${cellRatio(cart)}` : r.cart_gap, cart ? "neutral" : "gap"],
@@ -205,11 +231,12 @@ function showFunnel() {
     ${stageSummary(r, chosen, comparator, other, status, gate)}
     ${messages()}
     ${funnelView.stage === "order" ? ordersDetail(r) : ""}
+    ${state.data.store && funnelView.stage==="order" && f.family==="astra" && !unavailable && f.device==="all" ? astraAlert() : ""}
     ${!unavailable && funnelView.stage !== "order" ? measuredDetails(r) : ""}
     <section class="panel radar-coverage"><div><h2>Покрытие магазина</h2>
       <p>Индексы заказов только у Kaspersky и Astra. В других ветках есть материалы по товарам.</p></div>
       <div class="row">${button("Поиск продукта", "page", "catalog")}${button("Возможности роста", "page", "growth")}</div>
-    </section>`;
+    </section>${storeIndicators()}`;
 }
 
 function currentStudy() {
@@ -240,13 +267,16 @@ async function runFunnelStudy() {
 function eventCheck(task) {
   const p = task.plan;
   const outcomes = state.data.event_results;
+  const finding = task.radar?.finding === "kes";
   return `<div class="wide">${button("← " + taskLabel(task.id), "task", task.id, "link")}
-    <p class="eyebrow">Проверка после релиза · ${taskLabel(task.id)}</p>
-    <h1>Сверка действия и события</h1><p class="lede">${esc(task.title)}</p>
+    <p class="eyebrow">${finding ? "Самостоятельный заказ" : "Проверка после релиза"} · ${taskLabel(task.id)}</p>
+    <h1>${finding ? "Проверка после релиза" : "Сверка действия и события"}</h1><p class="lede">${esc(task.title)}</p>
+    ${finding ? button("Открыть исходную находку","run",task.radar.id,"link") : ""}
     <section class="panel"><h2>Правило проверки</h2><p>${esc(task.criterion)}</p>${shownRelated(task.study_data)}
+      ${task.radar?.owner ? `<p class="by">Владелец · ${esc(task.radar.owner)}. Вернуться ${prettyDate(task.radar.due)}.</p>` : ""}
       ${task.radar?.followup ? `<p class="by">Условие повторной проверки · ${esc(task.radar.followup)}</p>` : ""}</section>
     <section class="panel" id="result">
-      <h2>Статус данных</h2><p>${esc(task.study_data.historical_result)}</p>
+      <h2>Статус данных</h2>${p.desktop==="waiting" && p.mobile==="waiting" ? chip("Ждём данные") : ""}<p>${esc(task.study_data.historical_result)}</p>
       <p class="by">Фактический результат заносит PM по журналу тестовых действий.</p>
       <div class="chips">${chip("Компьютер · " + outcomes[p.desktop])}${chip("Телефон · " + outcomes[p.mobile])}</div>
       ${p.evidence ? `<p><strong>Источник сверки</strong> · ${esc(p.evidence)}</p>` : ""}
