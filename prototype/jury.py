@@ -1,14 +1,21 @@
-"""Prepare the isolated demo dataset and issue or revoke invitations."""
+"""Prepare the isolated demo dataset and issue or revoke invitations on Beelink."""
 
 import argparse
 import hashlib
 import json
-import os
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
 from evidence import facts_and_tasks
+from funnel import jury_aggregates, load_history
+
+PARAPHRASES = {
+    "F3": "В одном интервью покупатель запросил онлайн-сверку, историю покупок и возможность распечатать счёт.",
+    "F4": "Один покупатель предложил повторять закупку из письма с подтверждением заказа.",
+    "F6": "В одном интервью покупатель объяснил, что бессрочная лицензия пока не требует повторной закупки.",
+}
+ALLOWED = set("F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11".split())
 
 
 def read_json(path):
@@ -27,9 +34,19 @@ def write_private(path, value):
 
 
 def fixtures(out):
-    os.environ.pop("PM_EVIDENCE_WORKBOOK", None)
-    facts, tasks = facts_and_tasks()
-    write_private(out, json.dumps({"facts": facts, "tasks": tasks}, ensure_ascii=False, indent=2))
+    source, _ = facts_and_tasks()
+    demo = []
+    for fact in source:
+        if fact["id"] in ALLOWED:
+            item = {key: fact[key] for key in ("id", "type", "title", "text", "source")}
+            item["text"] = PARAPHRASES.get(item["id"], item["text"])
+            item["image"] = ""
+            demo.append(item)
+    tasks = [
+        {"task_id": "Д-01", "title": "Проверить полноту событий электронной торговли", "status": "К проверке"},
+        {"task_id": "Д-02", "title": "Сверить пути самостоятельной оплаты", "status": "В очереди"},
+    ]
+    write_private(out, json.dumps({"facts": demo, "tasks": tasks}, ensure_ascii=False, indent=2))
 
 
 def synthetic(out):
@@ -55,6 +72,8 @@ def main():
     sample.add_argument("output", type=Path)
     fake = sub.add_parser("synthetic")
     fake.add_argument("output", type=Path)
+    radar = sub.add_parser("funnel")
+    radar.add_argument("output", type=Path)
     issue = sub.add_parser("issue")
     issue.add_argument("registry", type=Path)
     issue.add_argument("origin")
@@ -69,6 +88,12 @@ def main():
         return
     if args.command == "synthetic":
         synthetic(args.output)
+        return
+    if args.command == "funnel":
+        data = jury_aggregates(load_history())
+        tasks = [{"task_id": data["task"]["id"], "title": data["task"]["title"], "status": data["task"]["status"]}]
+        write_private(args.output, json.dumps({"mode": "jury-funnel", "facts": [], "tasks": tasks, "funnel": data},
+                                             ensure_ascii=False, indent=2))
         return
     registry = read_json(args.registry)
     if args.command == "issue":

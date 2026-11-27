@@ -6,9 +6,11 @@ import {join} from "node:path";
 import {pathToFileURL} from "node:url";
 
 const [url, work, output] = process.argv.slice(2);
-const {chromium} = await import(process.env.PM_PLAYWRIGHT ? pathToFileURL(process.env.PM_PLAYWRIGHT) : "playwright");
+const {chromium} = await import(pathToFileURL(process.env.PM_PLAYWRIGHT ||
+  "/opt/internal-tools/browser-qa/node_modules/playwright/index.mjs"));
 const browser = await chromium.launch({
-  headless:false, executablePath:process.env.PM_CHROMIUM,
+  headless:false, executablePath:process.env.PM_CHROMIUM ||
+    "/home/pzzz/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
   ignoreDefaultArgs:["--enable-automation"],
   args:["--no-sandbox", "--disable-infobars", "--disable-translate", "--disable-features=Translate,TranslateUI",
         "--window-position=0,0", "--window-size=1440,900"],
@@ -54,7 +56,7 @@ try {
   await button("Проверить подключение").click();
   await byText("Тестовый счётчик участника пока не подключён.").or(
     page.getByText("Тестовый счётчик участника пока не подключён.",{exact:true})).first().waitFor();
-  await at(11,"Контрольный сигнал по заказам");
+  await at(11,"Контроль Kaspersky");
   await button("Сигналы").click();
   await page.locator('[data-topic="kes"]').click();
   await page.locator(".source-card").filter({hasText:"Заказы двух семейств"}).getByRole("button").click();
@@ -74,7 +76,7 @@ try {
   const sourceInLibrary = !(await selected.count());
   if (sourceInLibrary) {
     await button("Источники").click();
-    await button("Материалы для разбора").click();
+    await button("Исторические материалы").click();
   }
   await selected.getByRole("button").click();
   await page.getByRole("dialog",{name:""}).waitFor();
@@ -117,7 +119,7 @@ try {
   await at(133,"Открытие проверки");
   await button("Проверки").click();
   await page.locator("[data-check='1']").click();
-  await byText("Проверка магазина · ожидаем данные после релиза.").waitFor();
+  await byText("Исторический срез · ожидаем данные после релиза.").waitFor();
   await at(141,"Синтетические группы и решение PM");
   await page.getByLabel("Синтетическая выборка").check();
   const decision = "Оставить текущий путь. Собрать больше наблюдений перед расширением.";

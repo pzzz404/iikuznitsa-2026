@@ -15,9 +15,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 def add_journal(book, local, external):
     sheet = book.create_sheet("Журнал замера")
     sheet.append(["Контур", "Сценарий", "Задача", "Вызов", "Модель", "Вход", "Выход", "В кэше",
-                  "мс", "Фактически списано", "Валюта", "Подтверждение", "Статус", "ID генерации"])
-    columns = "ABCDEFGHIJKLMN"
-    sizes = (22, 23, 12, 10, 25, 11, 11, 11, 12, 20, 10, 27, 17, 39)
+                  "мс", "Фактически списано", "Валюта", "Подтверждение", "Статус", "ID генерации",
+                  "ID исследования", "Провайдер"])
+    columns = "ABCDEFGHIJKLMNOP"
+    sizes = (22, 23, 12, 10, 25, 11, 11, 11, 12, 20, 10, 27, 17, 39, 27, 17)
     for column, width in zip(columns, sizes, strict=True):
         sheet.column_dimensions[column].width = width
         cell = sheet[column+"1"]
@@ -25,18 +26,21 @@ def add_journal(book, local, external):
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(wrap_text=True)
     sheet.freeze_panes = "A2"
-    for environment, logs in (("Локальный ваншот", local), ("OpenRouter", external)):
+    for is_external, logs in ((False, local), (True, external)):
         if not logs:
             continue
-        task = logs["task"]
+        environment = "OpenRouter" if is_external else logs.get("label", "Локальный ваншот")
+        jobs = [logs["task"], *logs.get("additional_tasks", [])]
+        task_ids = {task["study"]: task["id"] for task in jobs}
         for call in reversed(logs["journal"]["calls"]):
-            cost = call.get("actual_cost") if environment == "OpenRouter" else "0"
-            sheet.append([environment, call["scenario"], f"PM-{task['id']:03d}" if call["study"] == task["study"] else None,
+            cost = call.get("actual_cost") if is_external else "0"
+            task_id = task_ids.get(call["study"])
+            sheet.append([environment, call["scenario"], f"PM-{task_id:03d}" if task_id is not None else None,
                           call["id"], call["model"], call["prompt_tokens"], call["completion_tokens"], call["cached_tokens"],
                           call["elapsed_ms"], float(cost) if cost is not None else None,
-                          "USD" if environment == "OpenRouter" else "RUB",
-                          call.get("receipt") if environment == "OpenRouter" else "usage llama.cpp; тариф 0",
-                          call["status"], call.get("generation")])
+                          "USD" if is_external else "RUB",
+                          call.get("receipt") if is_external else "usage llama.cpp; тариф 0",
+                          call["status"], call.get("generation"), call.get("study"), call.get("platform")])
             sheet["J"+str(sheet.max_row)].number_format = "0.000000000"
     sheet.auto_filter.ref = sheet.dimensions
 
@@ -68,18 +72,23 @@ def fill(original, output, local, external, rate):
     sheet["A14"] = "Фактическая сумма за задачу · валюта списания"
     sheet["A15"] = "OpenRouter · синтетический прогон"
     source = external or local
-    calls = source["task"]["calls"]
-    if not calls or any(row["prompt_tokens"] is None or row["completion_tokens"] is None for row in calls):
-        raise ValueError("Не хватает замеров токенов по задаче")
-    prompt = sum(row["prompt_tokens"] for row in calls)
-    completion = sum(row["completion_tokens"] for row in calls)
-    total_calls = len(calls)
-    row = ["Разбор → задача", calls[0]["model"], total_calls, prompt/total_calls, completion/total_calls]
-    for cell, value in zip(sheet["A9:E9"][0], row, strict=True):
-        cell.value = value
+    jobs = [source["task"], *source.get("additional_tasks", [])]
+    if len(jobs) > (1 if external else 4):
+        raise ValueError("Слишком много сценариев для строк калькулятора")
+    for row_number, task in enumerate(jobs, 9):
+        measurements = task["calls"]
+        if not measurements or any(row["prompt_tokens"] is None or row["completion_tokens"] is None for row in measurements):
+            raise ValueError("Не хватает замеров токенов по задаче")
+        total = len(measurements)
+        prompt = sum(row["prompt_tokens"] for row in measurements)
+        completion = sum(row["completion_tokens"] for row in measurements)
+        row = [task.get("label","Разбор → задача"), measurements[0]["model"], total, prompt/total, completion/total]
+        for cell, value in zip(sheet[f"A{row_number}:E{row_number}"][0], row, strict=True):
+            cell.value = value
+    calls = jobs[0]["calls"]
     sheet["A17"] = "Вход и выход по фактическому usage. В журнале одна строка на каждый вызов."
-    sheet["A18"] = "Локально: CPU и llama.cpp. Мощность, тариф и амортизация не замерены."
-    sheet["A19"] = "Токены разработки Codex вне расчёта. Второй вопрос в ролике не создаёт задачу."
+    sheet["A18"] = "Локально: Beelink, CPU, llama.cpp. Мощность, тариф и амортизация не замерены."
+    sheet["A19"] = local.get("comment", "Токены разработки Codex вне расчёта. Второй вопрос в ролике не создаёт задачу.")
     caches = {}
     if external:
         if any(c.get("actual_cost") is None or not c.get("receipt") or c.get("currency") != "USD" for c in calls):
@@ -96,11 +105,12 @@ def fill(original, output, local, external, rate):
             caches = {"I9": amount*rate, "I13": amount*rate}
         sheet["A17"] = "Списание USD из OpenRouter usage.cost / generation.total_cost. Тарифы не подставляются."
     else:
-        sheet["F9"], sheet["G9"], sheet["H9"] = 0, 0, "₽"
+        for row_number in range(9, 9+len(jobs)):
+            sheet[f"F{row_number}"], sheet[f"G{row_number}"], sheet[f"H{row_number}"] = 0, 0, "₽"
         sheet["I14"] = 0
         sheet["I14"].number_format = '0" ₽"'
         sheet["I15"] = "Ожидает ключа и замера"
-        caches = {"I9": 0, "I13": 0}
+        caches = {f"I{number}": 0 for number in (*range(9, 9+len(jobs)), 13)}
     sheet["A14"].font = Font(bold=True, color="143F34")
     add_journal(book, local, external)
     write_cached(book, output, caches)

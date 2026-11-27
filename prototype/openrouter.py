@@ -21,7 +21,7 @@ def key():
                 raise ValueError
             value = KEY_FILE.read_text().strip()
         except (OSError, ValueError):
-            raise RuntimeError("Настройте ключ OpenRouter в файле с правами 600.") from None
+            raise RuntimeError("Настройте ключ OpenRouter на Beelink в файле с правами 600.") from None
     if not value or any(c.isspace() for c in value):
         raise RuntimeError("Проверьте формат ключа OpenRouter.")
     return value
@@ -31,8 +31,14 @@ def headers(api_key):
     return {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
 
 
+class ResponseError(RuntimeError):
+    def __init__(self, message, reply):
+        super().__init__(message)
+        self.reply = reply if isinstance(reply, dict) else {}
+
+
 def complete(body, api_key):
-    body.update(model=MODEL, max_tokens=224, reasoning={"enabled": False},
+    body.update(model=MODEL, max_tokens=max(224, body["max_tokens"]), reasoning={"enabled": False},
                 usage={"include": True}, provider={"require_parameters": True, "data_collection": "deny"})
     body["messages"][0]["content"] += "\n/no_think"
     body["response_format"]["json_schema"]["strict"] = True
@@ -40,11 +46,20 @@ def complete(body, api_key):
                           data=json.dumps(body, ensure_ascii=False).encode(), headers=headers(api_key))
     try:
         with request.urlopen(req, timeout=75) as reply:
-            return json.load(reply, parse_float=Decimal)
+            result = json.load(reply, parse_float=Decimal)
+            if isinstance(result, dict) and result.get("error"):
+                raise ResponseError("OpenRouter вернул ошибку генерации.", result)
+            return result
     except error.HTTPError as exc:
         messages = {401: "Ключ OpenRouter не принят.", 402: "Недостаточно средств OpenRouter.",
                     403: "OpenRouter отклонил доступ.", 429: "OpenRouter ограничил частоту запросов."}
-        raise RuntimeError(messages.get(exc.code, f"OpenRouter вернул HTTP {exc.code}.")) from None
+        try:
+            payload = json.load(exc, parse_float=Decimal)
+        except (ValueError, OSError):
+            payload = {}
+        finally:
+            exc.close()
+        raise ResponseError(messages.get(exc.code, f"OpenRouter вернул HTTP {exc.code}."), payload) from None
 
 
 def amount(value):

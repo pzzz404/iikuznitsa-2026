@@ -3,9 +3,11 @@ import {writeFile} from "node:fs/promises";
 import {pathToFileURL} from "node:url";
 
 const [url, output] = process.argv.slice(2);
-const {chromium} = await import(process.env.PM_PLAYWRIGHT ? pathToFileURL(process.env.PM_PLAYWRIGHT) : "playwright");
+const {chromium} = await import(pathToFileURL(process.env.PM_PLAYWRIGHT ||
+  "/opt/internal-tools/browser-qa/node_modules/playwright/index.mjs"));
 const browser = await chromium.launch({headless:true, args:["--no-sandbox"],
-  executablePath:process.env.PM_CHROMIUM});
+  executablePath:process.env.PM_CHROMIUM ||
+  "/home/pzzz/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome"});
 try {
   const page = await browser.newPage({viewport:{width:1366,height:900}});
   const button = name => page.getByRole("button",{name,exact:true});

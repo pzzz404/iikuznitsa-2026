@@ -105,6 +105,33 @@ def verification_defaults(metric):
             "control_guard": 30, "variant_guard": 31, "decision": ""}
 
 
+EVENT_RESULTS = {"waiting": "Ожидаем данные", "matched": "Действие и запись совпали",
+                 "tracking": "Расхождение в учёте", "failed": "Сбой действия воспроизведён"}
+
+
+def event_defaults():
+    return {"desktop": "waiting", "mobile": "waiting", "evidence": "", "decision": "", "date": date.today().isoformat()}
+
+
+def save_event_check(db, task, payload):
+    plan = event_defaults()
+    for device in ("desktop", "mobile"):
+        value = payload.get(device)
+        if not isinstance(value, str) or value not in EVENT_RESULTS:
+            raise ValueError("Выберите результат для каждого устройства")
+        plan[device] = value
+    for field in ("evidence", "decision"):
+        value = payload.get(field, "")
+        if not isinstance(value, str) or len(value.strip()) > 700:
+            raise ValueError("Проверьте длину наблюдения или решения")
+        plan[field] = value.strip()
+    if any(plan[d] != "waiting" for d in ("desktop", "mobile")) and not plan["evidence"]:
+        raise ValueError("Укажите, по каким данным получен результат")
+    db.execute("INSERT INTO checks VALUES (?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload",
+               (task, json.dumps(plan, ensure_ascii=False)))
+    return plan
+
+
 def interval(control, variant, n_control, n_variant):
     def wilson(count, size):
         p = count / size

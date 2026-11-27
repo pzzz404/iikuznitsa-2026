@@ -9,3 +9,10 @@
 *.sqlite3*
 *.gguf
 __pycache__/
+
+/.venv/
+*invitation*.txt
+*.key
+*.log
+/CONCEPT.md
+/MVP_PLAN.md
